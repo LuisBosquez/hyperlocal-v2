@@ -20,6 +20,9 @@ CREATE EXTENSION IF NOT EXISTS "postgis";
 
 -- pgcrypto for token generation
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- pg_trgm for fuzzy / substring matching on personal notes (notes-enriched search, Flow 16)
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 ```
 
 Supabase automatically creates the `auth` schema and `auth.users` table. All tables in this document live in the `public` schema. The `public.users` table is a profile extension of `auth.users` — its `id` is a foreign key to `auth.users(id)`.
@@ -166,6 +169,13 @@ CREATE INDEX user_places_place_id_idx ON public.user_places (place_id);
 
 -- Composite: fast lookup for "is this place saved by this user?"
 CREATE UNIQUE INDEX user_places_user_place_idx ON public.user_places (user_id, place_id);
+
+-- Notes-enriched search (Flow 16): trigram index over the note text so that
+-- `note ILIKE '%cortado%'` (and similarity matching) stays fast. The search query
+-- restricts rows to the viewer's own notes ∪ their mutual friends' notes before
+-- matching, so this index backs the substring/fuzzy match within that set.
+CREATE INDEX user_places_note_trgm_idx ON public.user_places
+  USING gin (note gin_trgm_ops);
 ```
 
 **Trigger:**
@@ -177,15 +187,102 @@ CREATE TRIGGER user_places_updated_at
 
 ---
 
+### `lists`
+
+User-curated collections of places (Flows 17–19) — the curation primitive (think Spotify playlists, but for places). A List has an owner, a name, an optional description, and a **visibility** (`public` shows on the owner's profile to anyone; `private` is owner-only). Every user is seeded a default **"Want to Go"** List (`is_default = true`), which is where a plain save lands and which cannot be deleted (only emptied or made private).
+
+> **Naming note (open):** "Want to Go" historically also denotes *places with a timeless plan* (Flow 4.2 / materialization worksheet). The default List reuses the name for the *save bucket*. The collision is tracked in the MVP-1 spec Open Questions and must be resolved before implementation — see [tech/09](09-materialization-workflow.md).
+
+```sql
+CREATE TYPE list_visibility AS ENUM ('public', 'private');
+
+CREATE TABLE public.lists (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  owner_id    UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  description TEXT,
+  visibility  list_visibility NOT NULL DEFAULT 'private',
+  is_default  BOOLEAN NOT NULL DEFAULT FALSE,  -- the seeded "Want to Go" list
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT lists_name_length CHECK (char_length(name) BETWEEN 1 AND 80),
+  CONSTRAINT lists_description_length CHECK (char_length(description) <= 280)
+);
+
+COMMENT ON TABLE public.lists IS
+  'User-created collections of places. visibility=public surfaces on the owner''s profile.
+   is_default marks the seeded "Want to Go" list (one per user, not deletable).';
+COMMENT ON COLUMN public.lists.visibility IS
+  'public: visible to anyone on the owner''s profile and via a share link.
+   private: owner-only.';
+```
+
+**Indexes:**
+```sql
+-- All lists owned by a user (profile render, "add to list" picker)
+CREATE INDEX lists_owner_id_idx ON public.lists (owner_id);
+
+-- Public lists for a profile, fetched by non-owners
+CREATE INDEX lists_owner_visibility_idx ON public.lists (owner_id, visibility);
+
+-- Enforce exactly one default ("Want to Go") list per user
+CREATE UNIQUE INDEX lists_one_default_per_owner_idx ON public.lists (owner_id)
+  WHERE is_default;
+```
+
+**Trigger:**
+```sql
+CREATE TRIGGER lists_updated_at
+  BEFORE UPDATE ON public.lists
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+```
+
+---
+
+### `list_places`
+
+The membership join between `lists` and `places` — many-to-many, so the same place can live in multiple Lists (Flow 18). A row here is independent of the underlying `user_places` save: removing a place from a List does not unsave it, and unsaving does not require removing it from Lists (though the app keeps them aligned in practice). `position` supports manual reordering within a List.
+
+```sql
+CREATE TABLE public.list_places (
+  id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  list_id    UUID NOT NULL REFERENCES public.lists(id) ON DELETE CASCADE,
+  place_id   UUID NOT NULL REFERENCES public.places(id) ON DELETE CASCADE,
+  position   INTEGER NOT NULL DEFAULT 0,  -- manual ordering within the list
+  added_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT list_places_unique UNIQUE (list_id, place_id)
+);
+
+COMMENT ON TABLE public.list_places IS
+  'Place membership in a list (many-to-many). A place may belong to many lists.
+   Independent of user_places — removing here never unsaves the place.';
+```
+
+**Indexes:**
+```sql
+-- Render a list's places in order
+CREATE INDEX list_places_list_id_position_idx ON public.list_places (list_id, position ASC);
+
+-- "Which of my lists is this place in?" (Place detail "Add to list" state)
+CREATE INDEX list_places_place_id_idx ON public.list_places (place_id);
+```
+
+---
+
 ### `plans`
 
-A Plan is a place + an optional date + an optional time. Three states:
+A Plan is a place + an optional date + an optional "when" — an exact `plan_time` **or** a coarse `plan_time_band` (morning/afternoon/evening). The derived `state` stays a 3-value union; `confirmed` covers both an exact time and a band, distinguished by `time_granularity` (`exact` | `approximate`):
 
-| State | `is_timeless` | `plan_date` | `plan_time` | Description |
-|---|---|---|---|---|
-| Timeless | `true` | `NULL` | `NULL` | "Want to Go" — no commitment, surfaces in follower's Want to Go list |
-| Tentative | `false` | set | `NULL` | Date set, time TBD — shows "Add time" prompt in Panel |
-| Confirmed | `false` | set | set | Full plan — date and time confirmed |
+| State | `is_timeless` | `plan_date` | `plan_time` | `plan_time_band` | Description |
+|---|---|---|---|---|---|
+| Timeless | `true` | `NULL` | `NULL` | `NULL` | No date/time commitment — pure intent. (Historically called "Want to Go"; the name now also denotes the default `lists` save bucket — see the naming note on `lists` and the spec Open Questions.) |
+| Tentative | `false` | set | `NULL` | `NULL` | Date set, no "when" yet — shows "Add time" prompt; eligible for time proposals (Flow 4.3) |
+| Confirmed (approximate) | `false` | set | `NULL` | set | Coarse band, e.g. "Saturday afternoon" — soft-confirmed; organizer gets a day-of nudge to refine (M-D19) |
+| Confirmed (exact) | `false` | set | set | `NULL` | Full plan — exact date and time |
+
+At most one of (`plan_time`, `plan_time_band`) is set. A band is a real materialized "when": `plan_materialized` fires on the first band-or-exact set (M-D20). See [tech/09 §11](../tech/09-materialization-workflow.md).
 
 Plans survive their organizer's cancellation — the `status` field records the organizer's action, but `plan_joins` rows are preserved for joiners.
 
@@ -196,12 +293,13 @@ CREATE TABLE public.plans (
   id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   organizer_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
   place_id     UUID NOT NULL REFERENCES public.places(id) ON DELETE RESTRICT,
-  plan_date    DATE,                            -- NULL when is_timeless = true
-  plan_time    TIME,                            -- NULL for timeless or tentative plans
-  is_timeless  BOOLEAN NOT NULL DEFAULT FALSE,
-  status       plan_status NOT NULL DEFAULT 'active',
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  plan_date      DATE,                          -- NULL when is_timeless = true
+  plan_time      TIME,                          -- exact time; NULL for timeless/tentative or band-only
+  plan_time_band TEXT,                           -- coarse band (M-D19); mutually exclusive with plan_time
+  is_timeless    BOOLEAN NOT NULL DEFAULT FALSE,
+  status         plan_status NOT NULL DEFAULT 'active',
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
   CONSTRAINT plans_timeless_no_date CHECK (
     (is_timeless = TRUE AND plan_date IS NULL AND plan_time IS NULL)
@@ -209,6 +307,15 @@ CREATE TABLE public.plans (
   ),
   CONSTRAINT plans_time_requires_date CHECK (
     plan_time IS NULL OR plan_date IS NOT NULL
+  ),
+  CONSTRAINT plans_band_values CHECK (
+    plan_time_band IS NULL OR plan_time_band IN ('morning', 'afternoon', 'evening')
+  ),
+  CONSTRAINT plans_band_requires_date CHECK (
+    plan_time_band IS NULL OR plan_date IS NOT NULL
+  ),
+  CONSTRAINT plans_one_time_kind CHECK (
+    NOT (plan_time IS NOT NULL AND plan_time_band IS NOT NULL)
   )
 );
 
@@ -217,9 +324,14 @@ COMMENT ON TABLE public.plans IS
    Joiners retain their plan_joins rows regardless of status.';
 COMMENT ON COLUMN public.plans.is_timeless IS
   'TRUE = no date or time set ("Want to Go" intent). FALSE = date is set (time may be null).';
+COMMENT ON COLUMN public.plans.plan_time_band IS
+  'Coarse time band (morning/afternoon/evening) when a rough time was committed instead
+   of an exact one (M-D19). Mutually exclusive with plan_time; soft-confirms the plan.';
 COMMENT ON COLUMN public.plans.status IS
   'active: plan is live. cancelled: organizer cancelled but plan persists for joiners.';
 ```
+
+> Added in [migration 004](../backend/migrations/004_time_proposals.sql): `plan_time_band` + the band constraints.
 
 **Indexes:**
 ```sql
@@ -305,6 +417,56 @@ CREATE INDEX plan_joins_user_id_idx ON public.plan_joins (user_id);
 
 ---
 
+### `plan_time_proposals`
+
+Collaborative materialization (Flow 4.3/4.4, [tech/09 §10](../tech/09-materialization-workflow.md)). Any mutual friend who can join a **timeless/tentative** plan may propose 1..N time options; the **organizer** accepts one (→ the plan materializes), declines all, or lets the proposal expire. Added in [migration 004](../backend/migrations/004_time_proposals.sql).
+
+```sql
+CREATE TABLE public.plan_time_proposals (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  plan_id         UUID NOT NULL REFERENCES public.plans(id) ON DELETE CASCADE,
+  proposer_id     UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'accepted', 'declined', 'expired')),
+  options         JSONB NOT NULL DEFAULT '[]',
+  expires_at      TIMESTAMPTZ NOT NULL,         -- proposer-set; default now()+48h (M-D17)
+  accepted_option INTEGER,                       -- index into options when status='accepted'
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE public.plan_time_proposals IS
+  'A non-organizer''s proposed time options on a timeless/tentative plan (Flow 4.3).
+   The organizer accepts one option (→ plan materializes, M-D15), declines all, or
+   lets it expire (M-D17/M-D18). At most one pending proposal per plan (M-D16).';
+COMMENT ON COLUMN public.plan_time_proposals.options IS
+  'JSONB array of { plan_date, plan_time|null, plan_time_band|null } — each option has
+   exactly one of plan_time / plan_time_band. accepted_option indexes into this array.';
+```
+
+**Indexes:**
+```sql
+-- One pending proposal per plan (M-D16); app code also pre-checks → 409.
+CREATE UNIQUE INDEX one_pending_proposal_per_plan
+  ON public.plan_time_proposals (plan_id) WHERE status = 'pending';
+
+CREATE INDEX plan_time_proposals_plan_id_idx     ON public.plan_time_proposals (plan_id);
+CREATE INDEX plan_time_proposals_proposer_id_idx ON public.plan_time_proposals (proposer_id);
+
+-- Cron expiry pass: pending proposals past expires_at.
+CREATE INDEX plan_time_proposals_pending_expiry_idx
+  ON public.plan_time_proposals (status, expires_at);
+```
+
+**Trigger:**
+```sql
+CREATE TRIGGER plan_time_proposals_updated_at
+  BEFORE UPDATE ON public.plan_time_proposals
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+```
+
+---
+
 ### `follows`
 
 One-directional follow relationships. No approval required (Flow 6). Mutual follows (both rows exist) = "friends" — unlocks full plan visibility.
@@ -347,11 +509,15 @@ In-app notification records delivered as Notification cards in The Panel (Flow 6
 CREATE TYPE notification_type AS ENUM (
   'new_follower',           -- someone followed you
   'follow_back_prompt',     -- a user you follow has followed you back
-  'plan_time_updated',      -- organizer added/changed time on a plan you marked Interested
-  'plan_reminder_day_before', -- day-before reminder for your upcoming plan
-  'plan_reminder_morning',  -- morning-of reminder for your upcoming plan
+  'plan_time_updated',      -- organizer set/changed a time; sent to Joined ∪ Interested (M-D7a)
+  'plan_reminder_day_before', -- day-before reminder for an upcoming plan
+  'plan_reminder_morning',  -- morning-of reminder for an upcoming plan
+  'plan_date_passed',       -- tentative plan's date passed with no time set (M-D6a)
   'friend_joined_plan',     -- a mutual friend joined your plan
-  'plan_cancelled'          -- a plan you joined was cancelled by organizer
+  'plan_cancelled',         -- a plan you joined was cancelled by organizer
+  'plan_time_proposed',     -- a friend proposed time options on your plan (Flow 4.3, M-D14)
+  'plan_proposal_accepted', -- the organizer picked one of your proposed times (M-D15)
+  'plan_proposal_declined'  -- your proposal was declined / expired / superseded (M-D18)
 );
 
 CREATE TABLE public.notifications (
@@ -373,8 +539,12 @@ COMMENT ON COLUMN public.notifications.data IS
    follow_back_prompt:  { follower_id, follower_handle }
    plan_time_updated:   { plan_id, organizer_handle, place_name, plan_date, plan_time }
    plan_reminder_*:     { plan_id, place_name, plan_date, plan_time }
+   plan_date_passed:    { plan_id, place_id, place_name }
    friend_joined_plan:  { plan_id, joiner_handle, joiner_avatar_url, place_name }
-   plan_cancelled:      { plan_id, organizer_handle, place_name }';
+   plan_cancelled:      { plan_id, organizer_handle, place_name }
+   plan_time_proposed:     { plan_id, proposer_handle, place_name, option_count, expires_at }
+   plan_proposal_accepted: { plan_id, place_name, plan_date, plan_time, plan_time_band }
+   plan_proposal_declined: { plan_id, place_name, reason }';
 ```
 
 **Indexes:**
@@ -397,7 +567,8 @@ CREATE TABLE public.invite_links (
   id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   token      TEXT NOT NULL,                    -- URL-safe random token, e.g. gen_random_bytes(12)
   created_by UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-  plan_id    UUID REFERENCES public.plans(id) ON DELETE SET NULL,  -- null = profile link
+  plan_id    UUID REFERENCES public.plans(id) ON DELETE SET NULL,  -- set = plan link
+  list_id    UUID REFERENCES public.lists(id) ON DELETE SET NULL,  -- set = public-list link (Flow 19)
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMPTZ,                      -- null = no expiry
   used_by    UUID REFERENCES public.users(id) ON DELETE SET NULL,  -- null = not yet used
@@ -407,8 +578,8 @@ CREATE TABLE public.invite_links (
 );
 
 COMMENT ON TABLE public.invite_links IS
-  'Shareable invite links. plan_id = plan-specific link; NULL = generic profile share link.
-   used_by tracks new user acquisition for the invite conversion rate metric.';
+  'Shareable invite links. Target precedence: plan_id set = plan link; list_id set = public-list link;
+   both NULL = generic profile share link. used_by tracks new user acquisition for the conversion metric.';
 ```
 
 **Indexes:**
@@ -442,9 +613,12 @@ COMMENT ON TABLE public.events IS
    No reads via API — analytics consumed via PostHog UI or service-role queries.';
 
 COMMENT ON COLUMN public.events.event_name IS
-  'One of: invite_link_shared, invite_link_converted, user_active_session,
+  'Core loop: invite_link_shared, invite_link_converted, user_active_session,
    plan_created, place_saved, plan_interested, plan_joined, plan_materialized,
-   mutual_connection_formed.';
+   mutual_connection_formed.
+   Discovery & curation: search_note_matched, area_rescoped, locate_me_tapped,
+   list_created, place_added_to_list, place_removed_from_list,
+   list_visibility_changed, list_shared, list_viewed, profile_map_pin_tapped.';
 ```
 
 **Indexes:**
@@ -464,6 +638,7 @@ CREATE INDEX events_user_id_idx ON public.events (user_id);
 auth.users (Supabase managed)
     └── public.users (id → auth.users.id)
             ├── user_places.user_id
+            ├── lists.owner_id
             ├── plans.organizer_id
             ├── plan_interests.user_id
             ├── plan_joins.user_id
@@ -476,7 +651,11 @@ auth.users (Supabase managed)
 
 public.places (id)
     ├── user_places.place_id
+    ├── list_places.place_id
     └── plans.place_id
+
+public.lists (id)
+    └── list_places.list_id
 
 public.plans (id)
     ├── plan_interests.plan_id
@@ -578,30 +757,55 @@ WHERE p.organizer_id = :profile_user_id
 ORDER BY p.plan_date ASC NULLS LAST;
 ```
 
-### Profile Page Query (one-way follower view — curated lists only)
+### Profile Page Query (Lists — replaces the old curated-list derivation)
+
+User-curated **Lists** are now the primary expression of taste on a profile. A non-mutual viewer sees only `public` Lists; a mutual friend (or the owner) sees all of them. The old auto-derived "Favorite Places" / "Want to Go" SQL is gone — these are now rows in `lists` / `list_places`.
 
 ```sql
--- Favorite Places: top 5 places from completed plans (where user was organizer or joiner)
-SELECT pl.id, pl.name, pl.address, pl.category, pl.photo_url,
-       COUNT(*) AS visit_count
-FROM plans p
-JOIN places pl ON pl.id = p.place_id
-LEFT JOIN plan_joins pj ON pj.plan_id = p.id AND pj.user_id = :profile_user_id
-WHERE (p.organizer_id = :profile_user_id OR pj.user_id IS NOT NULL)
-  AND p.plan_date < CURRENT_DATE
-  AND p.status = 'active'
-GROUP BY pl.id, pl.name, pl.address, pl.category, pl.photo_url
-ORDER BY visit_count DESC
-LIMIT 5;
-
--- Want to Go: places with timeless plans by this user
-SELECT pl.id, pl.name, pl.address, pl.category, pl.photo_url
-FROM plans p
-JOIN places pl ON pl.id = p.place_id
-WHERE p.organizer_id = :profile_user_id
-  AND p.is_timeless = TRUE
-  AND p.status = 'active';
+-- Lists visible to the viewer, with their places (ordered).
+-- :viewer_can_see_private is TRUE for the owner or a mutual friend, else FALSE.
+SELECT l.id, l.name, l.description, l.visibility, l.is_default,
+       lp.position, pl.id AS place_id, pl.name AS place_name,
+       pl.address, pl.category, pl.lat, pl.lng, pl.photo_url
+FROM lists l
+LEFT JOIN list_places lp ON lp.list_id = l.id
+LEFT JOIN places pl ON pl.id = lp.place_id
+WHERE l.owner_id = :profile_user_id
+  AND (l.visibility = 'public' OR :viewer_can_see_private)
+ORDER BY l.is_default DESC, l.created_at ASC, lp.position ASC;
 ```
+
+The **profile map** pins the distinct places across the viewer-visible Lists (mutual friends additionally see the full `user_places` set — same query as the mutual-friend saved-places query above).
+
+### Notes-enriched Search Query (Flow 16)
+
+Searches place name/category **and** personal notes — the viewer's own notes plus their mutual friends' notes. Note matches carry **provenance** (whose note matched) and are ranked above name-only matches. The viewer's own note outranks a friend's for the same place.
+
+```sql
+WITH searchable_notes AS (
+  -- own notes + mutual friends' notes only
+  SELECT up.place_id, up.user_id, up.note,
+         (up.user_id = :viewer_id) AS is_own
+  FROM user_places up
+  WHERE up.note IS NOT NULL
+    AND (
+      up.user_id = :viewer_id
+      OR public.are_mutual_friends(:viewer_id, up.user_id)
+    )
+    AND up.note ILIKE '%' || :q || '%'
+)
+SELECT pl.id AS place_id, pl.name, pl.address, pl.category, pl.lat, pl.lng,
+       -- strongest match wins: own note > friend note
+       bool_or(sn.is_own) AS matched_own_note,
+       -- a friend handle to attribute the match (only when not own)
+       (ARRAY_AGG(u.handle) FILTER (WHERE NOT sn.is_own))[1] AS matched_friend_handle
+FROM searchable_notes sn
+JOIN places pl ON pl.id = sn.place_id
+JOIN public.users u ON u.id = sn.user_id
+GROUP BY pl.id, pl.name, pl.address, pl.category, pl.lat, pl.lng;
+```
+
+**Notes:** the API returns only a **provenance label** ("matched your note" / "matched @handle's note") — never the note text itself (privacy boundary, MVP-1 spec Flow 16). Name/category matches come from the place-search path and are merged with these note matches, note matches ranked first. `user_places_note_trgm_idx` backs the `ILIKE`.
 
 ---
 
@@ -615,6 +819,8 @@ Enable RLS on all tables:
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.places ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_places ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.lists ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.list_places ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.plans ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.plan_interests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.plan_joins ENABLE ROW LEVEL SECURITY;
@@ -683,6 +889,50 @@ CREATE POLICY "user_places_own" ON public.user_places
 CREATE POLICY "user_places_friends_read" ON public.user_places
   FOR SELECT USING (
     public.are_mutual_friends(auth.uid(), user_id)
+  );
+```
+
+### `lists` policies
+
+```sql
+-- Owner: full access to their own lists
+CREATE POLICY "lists_own" ON public.lists
+  FOR ALL USING (auth.uid() = owner_id)
+  WITH CHECK (auth.uid() = owner_id);
+
+-- Anyone (incl. anon) can read a public list; mutual friends can also read private ones
+CREATE POLICY "lists_public_read" ON public.lists
+  FOR SELECT USING (
+    visibility = 'public'
+    OR auth.uid() = owner_id
+    OR public.are_mutual_friends(auth.uid(), owner_id)
+  );
+```
+
+### `list_places` policies
+
+```sql
+-- Owner of the parent list: full access
+CREATE POLICY "list_places_owner" ON public.list_places
+  FOR ALL USING (
+    EXISTS (SELECT 1 FROM lists l WHERE l.id = list_id AND l.owner_id = auth.uid())
+  )
+  WITH CHECK (
+    EXISTS (SELECT 1 FROM lists l WHERE l.id = list_id AND l.owner_id = auth.uid())
+  );
+
+-- Read membership for any list the reader is allowed to see (mirrors lists_public_read)
+CREATE POLICY "list_places_readable" ON public.list_places
+  FOR SELECT USING (
+    EXISTS (
+      SELECT 1 FROM lists l
+      WHERE l.id = list_id
+        AND (
+          l.visibility = 'public'
+          OR l.owner_id = auth.uid()
+          OR public.are_mutual_friends(auth.uid(), l.owner_id)
+        )
+    )
   );
 ```
 
@@ -841,14 +1091,20 @@ supabase
 ```sql
 CREATE TYPE plan_status AS ENUM ('active', 'cancelled');
 
+CREATE TYPE list_visibility AS ENUM ('public', 'private');
+
 CREATE TYPE notification_type AS ENUM (
   'new_follower',
   'follow_back_prompt',
   'plan_time_updated',
   'plan_reminder_day_before',
   'plan_reminder_morning',
+  'plan_date_passed',
   'friend_joined_plan',
-  'plan_cancelled'
+  'plan_cancelled',
+  'plan_time_proposed',
+  'plan_proposal_accepted',
+  'plan_proposal_declined'
 );
 ```
 
@@ -858,19 +1114,22 @@ CREATE TYPE notification_type AS ENUM (
 
 Apply DDL in this order to respect foreign key dependencies:
 
-1. Extensions (`uuid-ossp`, `postgis`, `pgcrypto`)
-2. Enum types (`plan_status`, `notification_type`)
+1. Extensions (`uuid-ossp`, `postgis`, `pgcrypto`, `pg_trgm`)
+2. Enum types (`plan_status`, `list_visibility`, `notification_type`)
 3. Helper function (`set_updated_at`, `are_mutual_friends`)
 4. `public.users` (depends on `auth.users`)
 5. `public.places`
 6. `public.user_places` (depends on `users`, `places`)
-7. `public.plans` (depends on `users`, `places`)
-8. `public.plan_interests` (depends on `users`, `plans`)
-9. `public.plan_joins` (depends on `users`, `plans`)
-10. `public.follows` (depends on `users`)
-11. `public.notifications` (depends on `users`)
-12. `public.invite_links` (depends on `users`, `plans`)
-13. `public.events` (depends on `users`)
-14. All indexes (after tables)
-15. All triggers (after tables)
-16. Enable RLS + create policies (after tables and helper functions)
+7. `public.lists` (depends on `users`)
+8. `public.list_places` (depends on `lists`, `places`)
+9. `public.plans` (depends on `users`, `places`)
+10. `public.plan_interests` (depends on `users`, `plans`)
+11. `public.plan_joins` (depends on `users`, `plans`)
+12. `public.follows` (depends on `users`)
+13. `public.notifications` (depends on `users`)
+14. `public.invite_links` (depends on `users`, `plans`)
+15. `public.events` (depends on `users`)
+16. All indexes (after tables)
+17. All triggers (after tables)
+18. Enable RLS + create policies (after tables and helper functions)
+19. Seed a default "Want to Go" `lists` row per user (in the onboarding trigger / handler that creates `public.users`)

@@ -121,3 +121,47 @@ What I didn’t expect: the Google Calendar event was already gone before I’d 
 I don’t think I even fully processed what happened. One moment I was feeling like I’d dropped something, and then it was mostly handled. The debt was gone. We weren’t back at square one — we were already further along than before I cancelled, because now we both had the place in a plan instead of just saved separately.
 
 The guilt window was about eight seconds.
+
+## Find it by the reason I saved it
+
+Months ago I saved Victrola, the coffee place on Capitol Hill, and I typed a little note to myself: "cortado." That’s it. That’s the whole reason. Their cortado is the thing I think about. I didn’t save it because of the name — honestly I half-forget what it’s called — I saved it because of the one thing it does that I love.
+
+Last week a friend asked where to get a good cortado near downtown. I opened my map and typed "cortado" and got nothing useful, because the search only knows place names. The one piece of information that actually mattered — the reason I cared — was sitting right there in my own note, invisible to the search. I had to scroll through my saved places by memory until I recognized the pin.
+
+That’s backwards. The notes I write are the most honest data in the whole app. They’re why I saved the thing. If I search "cortado," the place I noted that about should be the first result. And if my friend Nico — who I know is a coffee person — wrote the same word on some hole-in-the-wall I’ve never been to, I’d love for that to surface too. That’s the stuff Google Maps can never have, because nobody writes Google Maps a love note.
+
+## Lists, like playlists for places
+
+I have a Spotify playlist for basically every mood. Rainy Sunday. Pre-game hype. The one I send people when they say "what should I listen to." It costs me nothing and it says a lot about me.
+
+I want that for places. Right now my saves are one big undifferentiated pile — the date-night wine bars are mixed in with the cheap lunch spots are mixed in with the one aquarium I saved for when my niece visits. They’re all just "saved." There’s no shape to it.
+
+What I actually want is to make a few lists. "Capitol Hill, when you only have an hour." "Where I take out-of-town friends." "Rainy day, indoors, no agenda." Some of them I’d keep private because they’re basically my own notes. But some of them I’d absolutely make public — I’d want them on my profile, so when someone new finds me they can see my taste laid out, even before we’re friends. The same place could live in two lists and that’s fine; the wine bar is both "date night" and "Capitol Hill favorites." That’s not a contradiction, that’s just how taste works.
+
+## Show me here, not everywhere
+
+I opened the app the other day and the list on the side was just... a wall. My saves, my friends’ saves, plans, all stacked up, and half of them were for places nowhere near me. There was a taco spot in San Diego in there. I do not need the San Diego taco spot while I’m standing in Fremont.
+
+It made the whole thing feel noisy, like a feed I had to fight instead of a map I could glance at. What I want is dead simple: show me a handful of good things right around where I’m looking. Not everything I’ve ever saved across three cities. Just here, just now, a short list I can actually read.
+
+And when I do want to look somewhere else — say I’m about to head to Ballard later — I want to drag the map over there and tell it "okay, look here now," and have the list quietly become about Ballard. The map already knows where I’m looking. It should just trust that.
+
+## Where am I, and what’s good around me right now
+
+I was visiting a friend in a part of the city I don’t know well, killing twenty minutes before dinner. I pulled up the app on my phone and the map was centered on... somewhere else entirely, wherever I’d last left it. I just wanted one button: put me where I am. Drop a dot so I can see myself, and show me what’s worth walking to from this exact spot.
+
+On my phone especially, panning around hunting for my own location is fiddly. I’m one-handed, I’m half-paying-attention to my friend, I just want "you are here" and three decent options nearby. That’s the whole ask. The app knows where I am if I let it — it should make it one tap to say "yes, here, now."
+
+## Reading a friend’s map
+
+There’s a guy I follow but haven’t really hung out with yet — we know each other from a run club. I was curious what he’s into, so I opened his profile. And the most interesting thing I could imagine seeing would be his places, on a map. Not a text list of names I don’t recognize — pins I can see, clustered in the neighborhoods he actually spends time in.
+
+## Saturday, sometime in the afternoon
+
+When my friend asked if I wanted to check out the new bakery this weekend, I said yes immediately — but then came the part that always stalls me out. *What time?* I genuinely didn’t know. Saturday afternoon, for sure. Two o’clock? Three? Depends on when I get up, whether I run errands first, the weather. Pinning it to an exact minute four days early felt fake, like I’d be committing to a number I’d just have to renegotiate later anyway.
+
+What I wanted to say was exactly what I meant: “Saturday afternoon.” Not a placeholder, not “TBD” — afternoon *is* the plan. That’s real enough to put on the calendar, real enough for both of us to keep the slot open. The exact hour is a detail that wants to be filled in Saturday morning when I actually know, not a blank I’m forced to guess at now or else leave the whole thing undefined.
+
+The nice version of this: I commit to the afternoon and move on. Then Saturday rolls around and something quietly nudges me — *want to lock in a time?* — and now, with the day in front of me, picking 2:30 takes one tap. And if I never get around to it? “Afternoon” still stands. We figure out the exact moment by text like everyone always does. The plan didn’t need the precision to be real; it just needed me to say when, roughly, and mean it.
+
+I’d scroll around it like I’m reading a little portrait of someone. "Oh, he’s got a whole cluster in the International District." "Oh, we both saved that same dive bar." And when I tap one of his pins and it looks good, I want to just grab it — save it to my own list, or even spin it into a plan and invite him, right there. His map becomes the start of my next outing. That’s a much warmer way to get to know someone than a follower count.

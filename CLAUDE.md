@@ -40,20 +40,38 @@ Out of scope for MVP-1: personalized recommendations, recurring plans, email inv
 ## Project structure
 
 ```
+frontend/                   React SPA (Vite + React 18 + TS + Tailwind)
+  src/{components,pages,hooks,store,lib,types}
+backend/                    Flask API (Python 3.12, AWS Lambda via Mangum)
+  app/{routes,jobs,utils}, devdb.py (offline SQLite dev layer)
 pm/                         Product management docs
   1-product-vision.md       Vision, problem statement, future horizons
   2-product-faq.md          Supplementary product context
   3-user-stories.md         User stories
+  4-user-journeys-mvp1.md   MVP-1 user journeys
   specs/
     mvp-1.md                Full MVP-1 specification (primary reference)
+    materialization-workflow.md   Plan materialization / nudge workflow
   wh3_whitepaper.pdf        Background whitepaper
+tech/                       Technical design docs (01–09)
+  01 architecture · 02 database schema · 03 infrastructure · 04 API design
+  05 realtime · 06 frontend · 07 UI components · 08 edge cases · 09 materialization
 ```
 
 ## Tech stack
 
-> Not yet decided. Update this section when the stack is chosen.
+- **Frontend** — React 18 + Vite + TypeScript + Tailwind CSS. State via Zustand + React Query. Mapbox GL JS for the map. Deployed as a static SPA.
+- **Backend** — Flask (Python 3.12) deployed to AWS Lambda via Mangum. REST API under `/api/v1/`.
+- **Data & auth** — Supabase (Postgres + Auth + Realtime). Google OAuth via Supabase Auth.
+- **Places** — Google Places API (source of all places; results cached locally).
+- **Analytics** — PostHog.
+- See [README.md](README.md) and [tech/01-system-architecture.md](tech/01-system-architecture.md) for details.
 
 ## Working in this repo
 
-- The `pm/` directory is the source of truth for product decisions. Read relevant specs before proposing implementation approaches.
-- When the stack is established, add conventions, commands, and architecture notes here.
+- The `pm/` directory is the source of truth for product decisions. Read relevant specs before proposing implementation approaches. Key references: [pm/specs/mvp-1.md](pm/specs/mvp-1.md), [pm/4-user-journeys-mvp1.md](pm/4-user-journeys-mvp1.md), [pm/specs/materialization-workflow.md](pm/specs/materialization-workflow.md).
+- The `tech/` directory holds the technical design docs; consult the relevant one before changing architecture, schema, or APIs.
+- **Dev commands** (see [README.md](README.md) for full setup, incl. zero-config offline mode):
+  - Backend: `cd backend && flask --app app run --port 5001 --debug`
+  - Frontend: `cd frontend && npm run dev` (http://localhost:5173)
+  - Vite proxies `/api` → `http://localhost:5001`, so no CORS config is needed locally.

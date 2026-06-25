@@ -1,19 +1,12 @@
 import { create } from 'zustand';
-import type { Session } from '@supabase/supabase-js';
-
-interface AppUser {
-  id: string;
-  handle: string | null;
-  display_name: string | null;
-  avatar_url: string | null;
-  bio: string | null;
-}
+import type { AppUser } from '../types/api';
+import type { AuthSession } from '../lib/authClient';
 
 interface AuthStore {
-  session: Session | null;
+  session: AuthSession | null;
   user: AppUser | null;
   initialized: boolean;
-  setSession: (session: Session | null) => void;
+  setSession: (session: AuthSession | null) => void;
   setUser: (user: AppUser | null) => void;
   setInitialized: (initialized: boolean) => void;
   signOut: () => void;

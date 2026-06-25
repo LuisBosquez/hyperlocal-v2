@@ -20,10 +20,18 @@ Authorization: Bearer <supabase_jwt>
 ```
 The Flask handler verifies the token with `supabase.auth.get_user(token)` and extracts `user.id` (UUID). The UUID matches `users.id` in the DB.
 
-### Standard error shape
+### Standard response envelope
+
+As built, **every** response (success and error) uses a uniform envelope so the client has one unwrap path (`backend/app/errors.py` → `ok()` / `err()`):
+
 ```json
-{ "error": "Human-readable message", "code": "SNAKE_CASE_CODE" }
+{ "data": <payload-or-null>, "error": null }
 ```
+```json
+{ "data": null, "error": { "code": "SNAKE_CASE_CODE", "message": "Human-readable", "fields": { "handle": "TAKEN" } } }
+```
+
+`message` and `fields` are optional. `fields` carries per-field validation detail (e.g. `{ "handle": "TAKEN", "suggestions": [...] }`). The frontend reads this via `lib/api.ts → apiError()` / `unwrap()`.
 
 ### Common error codes
 
@@ -33,13 +41,28 @@ The Flask handler verifies the token with `supabase.auth.get_user(token)` and ex
 | 401 | `UNAUTHORIZED` | JWT missing, expired, or invalid |
 | 403 | `FORBIDDEN` | Authenticated but not allowed |
 | 404 | `NOT_FOUND` | Resource does not exist |
-| 409 | `CONFLICT` | Duplicate resource (already following, already joined, handle taken) |
-| 422 | `VALIDATION_ERROR` | Field-level validation failure |
+| 409 | `CONFLICT` | Contested resource (handle taken, already onboarded) |
+| 422 | `VALIDATION_ERROR` | Field-level validation failure (`fields` populated) |
+| 422 | `TIME_IN_PAST` / `TIME_REQUIRED_TODAY` / `OUTSIDE_OPENING_HOURS` / `PLACE_UNAVAILABLE` | Plan datetime validation ([tech/08 §2](08-edge-cases-and-error-handling.md)) |
+| 410 | `GONE` | Invite link expired |
 | 500 | `INTERNAL_ERROR` | Unexpected server error |
+
+**Idempotent toggles (P2):** `POST` on follows / joins / interests / user-places returns **201 on create, 200 on duplicate** (with the current resource state) rather than `409`. `409 CONFLICT` is reserved for genuinely contested resources like a taken handle.
 
 ### Pagination (where applicable)
 Query params: `limit` (int, default 20, max 100) · `offset` (int, default 0)  
 Response includes: `{ "items": [...], "total": int, "limit": int, "offset": int }`
+
+### Area scoping (discovery endpoints)
+Discovery surfaces (the Panel place list, contextual suggestions, map pins, friends' places) are **scoped to the area the user is looking at** and **capped** so the result stays scannable (MVP-1 Flows 9/10/12/14; "Show what's nearby, not everything"). Endpoints that feed those surfaces accept:
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `bbox` | string | `minLng,minLat,maxLng,maxLat` — the current map viewport / "Search this area" selection. Filters places to `lat/lng` inside the box. |
+| `lat`, `lng` | float | Map center, used for proximity sort and as the area centroid when `bbox` is absent. |
+| `cap` | int | Max place results to return for the area. Default **9** (the "6–9" cap is an open spec question; server clamps to ≤ 9). |
+
+When `bbox` is omitted, the endpoint falls back to a radius around `lat`/`lng` (or recency when neither is given). The reverse-geocoded **area label** shown in the UI comes from `GET /geo/reverse` (below); it does not change the query.
 
 ---
 
@@ -84,6 +107,28 @@ Response includes: `{ "items": [...], "total": int, "limit": int, "offset": int 
 | `saved_at` | timestamptz | |
 | `updated_at` | timestamptz | |
 | UNIQUE | — | `(user_id, place_id)` |
+
+### `lists`
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | PK |
+| `owner_id` | uuid | FK → `users.id` |
+| `name` | text | 1–80 chars |
+| `description` | text | Nullable; ≤280 chars |
+| `visibility` | text | `public` \| `private`; default `private` |
+| `is_default` | boolean | `true` for the seeded "Want to Go" list (one per user, not deletable) |
+| `created_at` | timestamptz | |
+| `updated_at` | timestamptz | |
+
+### `list_places`
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | PK |
+| `list_id` | uuid | FK → `lists.id` |
+| `place_id` | text | FK → `places.id` |
+| `position` | int | Manual ordering within the list |
+| `added_at` | timestamptz | |
+| UNIQUE | — | `(list_id, place_id)` — a place appears at most once per list |
 
 ### `plans`
 | Column | Type | Notes |
@@ -131,7 +176,8 @@ Response includes: `{ "items": [...], "total": int, "limit": int, "offset": int 
 | `id` | uuid | PK |
 | `token` | text | Unique; URL-safe random 32-char string |
 | `creator_id` | uuid | FK → `users.id` |
-| `plan_id` | uuid | FK → `plans.id`; nullable |
+| `plan_id` | uuid | FK → `plans.id`; nullable (set = plan link) |
+| `list_id` | uuid | FK → `lists.id`; nullable (set = public-list link, Flow 19) |
 | `redeemed_by` | uuid | FK → `users.id`; nullable |
 | `redeemed_at` | timestamptz | Nullable |
 | `created_at` | timestamptz | |
@@ -349,21 +395,9 @@ Response includes: `{ "items": [...], "total": int, "limit": int, "offset": int 
 
 **Success `200 OK`** — Response shape varies by relationship tier:
 
-**Tier: No relationship (or unauthenticated)**
-```json
-{
-  "id": "uuid",
-  "handle": "string",
-  "display_name": "string",
-  "avatar_url": "string | null",
-  "bio": "string | null",
-  "relationship": "none",
-  "is_private": false
-}
-```
-If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-followers.
+**Tier: No relationship / one-way follower (or unauthenticated)**
 
-**Tier: One-way follower** (authenticated user follows target; target has not followed back)
+A profile leads with the owner's **public Lists**. Following does not unlock additional profile content on its own (public Lists are already visible) — it's the precursor to a mutual follow. `relationship` is `none` or `following` accordingly.
 ```json
 {
   "id": "uuid",
@@ -371,32 +405,29 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
   "display_name": "string",
   "avatar_url": "string | null",
   "bio": "string | null",
-  "relationship": "following",
+  "relationship": "none | following",
   "is_private": false,
-  "favorite_places": [
+  "lists": [
     {
-      "place_id": "string",
+      "id": "uuid",
       "name": "string",
-      "address": "string",
-      "category": "string",
-      "lat": 0.0,
-      "lng": 0.0
-    }
-  ],
-  "want_to_go": [
-    {
-      "place_id": "string",
-      "name": "string",
-      "address": "string",
-      "category": "string",
-      "lat": 0.0,
-      "lng": 0.0
+      "description": "string | null",
+      "visibility": "public",
+      "is_default": false,
+      "place_count": 0,
+      "places": [
+        { "place_id": "string", "name": "string", "address": "string",
+          "category": "string", "lat": 0.0, "lng": 0.0, "photo_url": "string | null" }
+      ]
     }
   ]
 }
 ```
+Only `visibility: public` Lists are included for this tier. The `places` arrays power the **profile map** (the union of their places is what gets pinned). If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-followers.
 
 **Tier: Mutual friend** (both users follow each other)
+
+Mutual friends additionally see **all** the owner's Lists (public and private), the full saved-places set (for the profile map), and upcoming plans.
 ```json
 {
   "id": "uuid",
@@ -406,6 +437,20 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
   "bio": "string | null",
   "relationship": "mutual",
   "is_private": false,
+  "lists": [
+    {
+      "id": "uuid",
+      "name": "string",
+      "description": "string | null",
+      "visibility": "public | private",
+      "is_default": false,
+      "place_count": 0,
+      "places": [
+        { "place_id": "string", "name": "string", "address": "string",
+          "category": "string", "lat": 0.0, "lng": 0.0, "photo_url": "string | null" }
+      ]
+    }
+  ],
   "saved_places": [
     {
       "place_id": "string",
@@ -439,10 +484,11 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
 
 **Implementer notes:**
 - Relationship check: query `follows` twice — one check `WHERE follower_id = me AND following_id = target`, one check `WHERE follower_id = target AND following_id = me`.
-- `favorite_places`: query `plans` WHERE `organizer_id = target_id AND planned_at < now() AND is_cancelled = false`, join `places`, group by `place_id`, take top 5 by occurrence count. Return place info only — no plan dates, no attendees.
-- `want_to_go`: query `plans` WHERE `organizer_id = target_id AND planned_at IS NULL AND is_cancelled = false`. Return place info only — no plan IDs, no dates.
+- `lists`: query `lists WHERE owner_id = target_id` filtered by visibility for the viewer's tier (`public` only for non-mutual; all for mutual or self), each joined to `list_places`/`places` ordered by `is_default DESC, created_at ASC, position ASC`. Cap `places` per list for the payload (e.g. first 50) and expose `place_count` for the rest.
+- The **profile map** is the distinct union of the visible Lists' places; for the mutual tier it's the full `saved_places` set. The frontend can pin from either — see Flow 20.
+- This **replaces** the former auto-derived `favorite_places` / `want_to_go` arrays. "Want to Go" is now the user's default List (`is_default = true`), returned inline in `lists`.
 - `upcoming_plans`: query `plans` WHERE `organizer_id = target_id AND (planned_at IS NULL OR planned_at > now()) AND is_cancelled = false`. Only for mutual tier.
-- The viewing user's own `saved_places` includes both own places AND friend's places — do NOT include the target user's note field in the response.
+- `saved_places` never includes the target user's private `note` text.
 
 ---
 
@@ -533,12 +579,17 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
       "lat": 0.0,
       "lng": 0.0,
       "distance_meters": 450,
-      "is_saved": false
+      "is_saved": false,
+      "match": {
+        "kind": "name | category | note",
+        "note_source": "own | friend | null",
+        "note_handle": "string | null"
+      }
     }
   ]
 }
 ```
-`is_saved` is `true` if the authenticated user has saved this place.
+`is_saved` is `true` if the authenticated user has saved this place. `match` describes **why** the place surfaced (Flow 16). For `kind: note`, `note_source` is `own` or `friend` and `note_handle` carries the friend's handle for the provenance label ("matched @handle's note"). **The note text itself is never returned.**
 
 **Errors:**
 | Status | Code | Condition |
@@ -546,10 +597,13 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
 | 400 | `INVALID_REQUEST` | `q`, `lat`, or `lng` missing |
 
 **Implementer notes:**
-- Proxy to Mapbox Geocoding API: `GET https://api.mapbox.com/geocoding/v5/mapbox.places/{q}.json?proximity={lng},{lat}&types=poi&access_token={MAPBOX_SECRET_TOKEN}&limit={limit}`.
-- Map Mapbox `place_name` → `name`, `place_name` (full) → `address`, `properties.category` → `category`, `geometry.coordinates` → `[lng, lat]`, `id` → `place_id`.
-- After fetching Mapbox results, query `user_places WHERE user_id = me AND place_id IN (result_ids)` and attach `is_saved` flag.
-- The Mapbox secret token lives in Lambda env vars; never expose it to the client.
+- **Two match sources, merged:**
+  1. **Place text** — proxy to the place provider (Mapbox Geocoding: `GET .../mapbox.places/{q}.json?proximity={lng},{lat}&types=poi&limit={limit}`); these produce `match.kind = name | category`.
+  2. **Notes** — query the **notes-enriched** path (Flow 16): match `user_places.note ILIKE '%q%'` over the viewer's own notes ∪ their mutual friends' notes (see the "Notes-enriched Search Query" in [tech/02](02-database-schema.md)). These produce `match.kind = note` with `note_source` / `note_handle`.
+- **Merge & rank:** de-dupe by `place_id` (a place matched by both note and name keeps the **note** match — it's the differentiated signal). Order: own-note matches → friend-note matches → name/category matches; within each, by `distance_meters` ascending.
+- Attach `is_saved` from `user_places WHERE user_id = me AND place_id IN (result_ids)`.
+- Fire `search_note_matched` (PostHog) when ≥1 result has `match.kind = note`.
+- The provider secret token lives in Lambda env vars; never expose it to the client.
 
 ---
 
@@ -602,8 +656,10 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
 **Query params:**
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `lat` | float | Yes | User's latitude |
-| `lng` | float | Yes | User's longitude |
+| `lat` | float | Yes | Area centroid latitude (map center) |
+| `lng` | float | Yes | Area centroid longitude |
+| `bbox` | string | No | Current area box (see *Area scoping*); biases/limits suggestions to the area |
+| `cap` | int | No | Max suggestions, default 9 (clamped ≤ 9) |
 | `weather` | string | No | `sunny` \| `cloudy` \| `rainy` (client provides from browser geolocation weather call) |
 | `timezone_offset` | int | No | UTC offset in minutes (e.g. `-420` for PDT) |
 
@@ -656,9 +712,11 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
 ```json
 {
   "place_id": "string",
-  "note": "string | null"
+  "note": "string | null",
+  "list_ids": ["uuid"]
 }
 ```
+`list_ids` (optional) — the Lists to add this place to (Flow 18). When omitted/empty, the place is added to the user's default **"Want to Go"** List so a save is never list-less.
 
 **Success `201 Created`:**
 ```json
@@ -667,19 +725,21 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
   "place_id": "string",
   "place_name": "string",
   "note": "string | null",
-  "saved_at": "ISO8601"
+  "saved_at": "ISO8601",
+  "list_ids": ["uuid"]
 }
 ```
 
 **Errors:**
 | Status | Code | Condition |
 |--------|------|-----------|
-| 400 | `INVALID_REQUEST` | `place_id` missing |
+| 400 | `INVALID_REQUEST` | `place_id` missing, or a `list_id` not owned by the user |
 | 409 | `CONFLICT` | User has already saved this place (return existing record with `200` instead of 409 — idempotent save) |
 
 **Implementer notes:**
-- Before inserting into `user_places`, upsert the place into `places` (fetch from Mapbox if not yet in DB).
+- Before inserting into `user_places`, upsert the place into `places` (fetch from the place provider if not yet in DB).
 - Use `INSERT ... ON CONFLICT (user_id, place_id) DO UPDATE SET note = EXCLUDED.note, updated_at = now()` to make this idempotent.
+- For each `list_id` (or the default list when none given), upsert a `list_places` row (`ON CONFLICT (list_id, place_id) DO NOTHING`). Validate every `list_id` is owned by the caller. Fire `place_added_to_list` per list added.
 - Fire PostHog event `place_saved` with `{ place_id, place_category }`.
 
 ---
@@ -800,7 +860,7 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
 | 404 | `NOT_FOUND` | Handle does not exist |
 
 **Implementer notes:**
-- Only mutual friends can call this endpoint and receive results. One-way followers do NOT get the full place list — the curated `favorite_places` / `want_to_go` lists are returned via `GET /users/:handle` instead.
+- Only mutual friends can call this endpoint and receive results. One-way followers do NOT get the full place list — they see the owner's **public Lists** (returned inline in `GET /users/:handle`, or via `GET /users/:handle/lists`).
 - Verify mutual follow before querying `user_places`.
 
 ---
@@ -813,7 +873,7 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
 | **Tables** | `follows`, `user_places`, `places`, `users` |
 | **PostHog** | — |
 
-**Query params:** `lat`, `lng`, `limit` (default 100)
+**Query params:** `lat`, `lng`, `bbox` (see *Area scoping*), `cap` (default 9)
 
 **Success `200 OK`:**
 ```json
@@ -839,7 +899,35 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
 
 **Implementer notes:**
 - Fetch all mutual friends' IDs first, then query `user_places WHERE user_id IN (friend_ids)`. Join `places` and `users`.
+- **Area-scoped:** filter to places inside `bbox` (or a radius around `lat`/`lng`); a friend's saves appear only when near the current area, never their whole global set (Flow 10). Return the nearest `cap` results.
 - This powers the map view showing friends' place pins. Keep response payload lean — no notes, no saved_at.
+
+---
+
+### `GET /geo/reverse`
+
+| | |
+|---|---|
+| **Auth** | Authenticated |
+| **Tables** | — (geocoding provider proxy, cached) |
+| **PostHog** | — |
+
+Reverse-geocodes the map center to a short **area / neighborhood label** for the floating overlay (Flows 12/14). Display-only — it does not affect which places are queried (that's driven by `bbox`/`lat`/`lng`).
+
+**Query params:**
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `lat` | float | Yes | Map center latitude |
+| `lng` | float | Yes | Map center longitude |
+
+**Success `200 OK`:**
+```json
+{ "area_label": "Capitol Hill", "context": "Seattle" }
+```
+
+**Implementer notes:**
+- Proxy to the geocoding provider's reverse endpoint, preferring a neighborhood-level result, falling back to locality, then a generic `"this area"` when nothing usable returns (Flow 14 sad path 14.1 — never error the UI over a missing label).
+- Cache aggressively (coarse lat/lng grid, e.g. round to ~3 decimals) — labels change slowly and this is called on every area re-scope.
 
 ---
 
@@ -1075,6 +1163,22 @@ If `is_private: true`, return `403 FORBIDDEN` for unauthenticated users and non-
 |--------|------|-----------|
 | 403 | `FORBIDDEN` | Requester is not a mutual friend of target |
 | 404 | `NOT_FOUND` | Handle does not exist |
+
+---
+
+### Collaborative time proposals (Flow 4.3/4.4)
+
+> Canonical spec: [tech/09 §10–11](09-materialization-workflow.md). Uses the current `plan_date` / `plan_time` / `plan_time_band` model (the legacy `planned_at` / `organizer_confirmed` wording elsewhere in this §4 predates the materialization rework — see tech/09; a full §4 cleanup is tracked separately). Each **option** is `{ plan_date, plan_time | null, plan_time_band | null }` with exactly one "when". `PATCH /plans/:plan_id` also accepts `plan_time_band` and **voids any pending proposal** when the organizer sets a time directly.
+
+| Endpoint | Auth | Behavior |
+|---|---|---|
+| `POST /plans/:plan_id/proposals` | mutual friend, **not** organizer | Body `{ options: [...1–5], expires_in_days? (default 2, 1–14) }`. Plan must be timeless/tentative. Validates each option (future + opening hours; bands via the band window). **409** if a pending proposal already exists (one per plan). Notifies organizer `plan_time_proposed`; PostHog `time_proposed`. → `201` with the proposal. |
+| `GET /plans/:plan_id/proposals` | viewer of plan | Organizer sees all; anyone else sees only their own. |
+| `POST /plans/:plan_id/proposals/:id/accept` | organizer | Body `{ option_index }`. Writes the option → materializes (`plan_materialized` once, `plan_time_updated` to Joined ∪ Interested **minus the proposer**). Proposer gets `plan_proposal_accepted`; PostHog `time_proposal_accepted`. |
+| `POST /plans/:plan_id/proposals/:id/decline` | organizer | Plan stays un-timed; proposer gets `plan_proposal_declined` (`reason=declined`); PostHog `time_proposal_declined`. |
+| `DELETE /plans/:plan_id/proposals/:id` | proposer | Retract own pending proposal (frees the slot). Idempotent; PostHog `time_proposal_retracted`. |
+
+**Errors:** `403` (organizer proposing on own plan; non-organizer accepting/declining), `404` (plan not visible — no existence leak; or proposal not found), `409` (pending proposal exists / already resolved), `422` (`OUTSIDE_OPENING_HOURS`, `TIME_IN_PAST`, `INVALID_REQUEST`).
 
 ---
 
@@ -1495,6 +1599,8 @@ Full user list is returned to anyone who can see the plan (organizer + joiners +
 |-------|------|----------|-------------|
 | `lat` | float | No | User's latitude (for place proximity sort) |
 | `lng` | float | No | User's longitude |
+| `bbox` | string | No | Current area box (see *Area scoping*); scopes place cards to the area |
+| `cap` | int | No | Max place cards, default 9 (clamped ≤ 9) |
 | `filter` | string | No | `all` (default) \| `plans` \| `places` \| `hide_notifications` |
 | `weather` | string | No | `sunny` \| `cloudy` \| `rainy` (for contextual place suggestions) |
 | `timezone_offset` | int | No | UTC offset in minutes |
@@ -1562,11 +1668,12 @@ Full user list is returned to anyone who can see the plan (organizer + joiners +
      - Joined plans (role `joiner`): `plans WHERE id IN (SELECT plan_id FROM plan_joins WHERE user_id = me)`, including cancelled ones.
      - Friend plans (role `friend`): `plans WHERE organizer_id IN (mutual_friend_ids) AND is_cancelled = false AND (planned_at IS NULL OR planned_at > now())` — exclude plans the user has already joined (those appear as `joiner`).
      - Sort within plans: timed plans by `planned_at ASC` (soonest first), timeless plans after timed ones sorted by `created_at DESC`.
-  3. **Place cards** (type `place`):
+  3. **Place cards** (type `place`) — **area-scoped and capped** (see *Area scoping*; MVP-1 Flows 9/10):
      - Own saved places (source `own`)
-     - Friends' saved places (source `friend`) — one entry per place per friend who saved it
+     - Friends' saved places (source `friend`) — one entry per place per friend who saved it, **only when near the current area** (never a friend's whole global save set)
      - Contextual suggestions (source `contextual`) — call the same logic as `GET /places/contextual`; skip if no `lat`/`lng` provided
-     - Sort by `distance_meters ASC` if `lat`/`lng` provided, else `saved_at DESC`.
+     - Filter to places inside `bbox` (or a radius around `lat`/`lng`), sort by `distance_meters ASC` (else `saved_at DESC`), and **return at most `cap` (default 9)** place cards combined.
+- **Plan cards are not area-scoped** — plans are time-relevant, surface at the top, and are bounded by their own soonest-first ordering (the cap applies only to place cards).
 - Apply `filter` param: `plans` = only notification + plan cards; `places` = only place cards; `hide_notifications` = no notification cards.
 - `note` is only populated for `source: own` place cards.
 
@@ -1630,17 +1737,265 @@ Full user list is returned to anyone who can see the plan (organizer + joiners +
 
 ---
 
+## 11. Lists
+
+User-curated collections of places (MVP-1 Flows 17–19). A place can belong to many Lists; each List is `public` or `private`. Every user has a non-deletable default **"Want to Go"** List (`is_default = true`).
+
+### `GET /users/me/lists`
+
+| | |
+|---|---|
+| **Auth** | Authenticated |
+| **Tables** | `lists`, `list_places` |
+| **PostHog** | — |
+
+Returns all of the caller's Lists (public and private), default first. Used to render the profile and to populate the "Add to List" picker on Place detail.
+
+**Query params:** `place_id` (optional) — when present, each list includes `contains_place: bool` so the picker can pre-check the Lists this place is already in.
+
+**Success `200 OK`:**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "name": "Want to Go",
+      "description": "string | null",
+      "visibility": "private",
+      "is_default": true,
+      "place_count": 12,
+      "contains_place": false,
+      "updated_at": "ISO8601"
+    }
+  ]
+}
+```
+
+---
+
+### `GET /users/:handle/lists`
+
+| | |
+|---|---|
+| **Auth** | Public (response varies by relationship) |
+| **Tables** | `users`, `follows`, `lists`, `list_places` |
+| **PostHog** | `list_viewed` (on single-list open, see below) |
+
+Returns the target user's Lists visible to the caller: **public only** for non-mutual viewers; **all** for mutual friends and self. Same item shape as `GET /users/me/lists` (no `contains_place`).
+
+**Errors:**
+| Status | Code | Condition |
+|--------|------|-----------|
+| 403 | `FORBIDDEN` | Target profile is private and caller is not a follower |
+| 404 | `NOT_FOUND` | Handle does not exist |
+
+---
+
+### `GET /lists/:list_id`
+
+| | |
+|---|---|
+| **Auth** | Public (must be able to see the list) |
+| **Tables** | `lists`, `list_places`, `places`, `users` |
+| **PostHog** | `list_viewed` |
+
+Returns one List with its ordered places — used by the List Page and by shared-link views (Flow 19). A `public` List is viewable by anyone (including via a direct share link even when the owner's profile is private); a `private` List is viewable only by its owner.
+
+**Success `200 OK`:**
+```json
+{
+  "id": "uuid",
+  "name": "string",
+  "description": "string | null",
+  "visibility": "public | private",
+  "is_default": false,
+  "owner": { "handle": "string", "display_name": "string", "avatar_url": "string | null" },
+  "is_owner": false,
+  "places": [
+    {
+      "place_id": "string", "name": "string", "address": "string",
+      "category": "string", "lat": 0.0, "lng": 0.0, "photo_url": "string | null",
+      "position": 0
+    }
+  ]
+}
+```
+
+**Errors:**
+| Status | Code | Condition |
+|--------|------|-----------|
+| 403 | `FORBIDDEN` | List is private and caller is not the owner |
+| 404 | `NOT_FOUND` | List does not exist |
+
+**Implementer notes:** fire `list_viewed` with `{ list_id, is_owner }`. A private profile does not gate a direct `public` list link — the link resolves to the list view only, leaking no other profile content (Flow 19.2).
+
+---
+
+### `POST /lists`
+
+| | |
+|---|---|
+| **Auth** | Authenticated |
+| **Tables** | `lists` |
+| **PostHog** | `list_created` |
+
+**Request body:**
+```json
+{ "name": "string", "description": "string | null", "visibility": "public | private" }
+```
+`visibility` defaults to `private`.
+
+**Success `201 Created`:** the created list object (same shape as a `GET /users/me/lists` item, `place_count: 0`).
+
+**Errors:**
+| Status | Code | Condition |
+|--------|------|-----------|
+| 400 | `INVALID_REQUEST` | `name` missing or > 80 chars; `description` > 280 chars |
+
+---
+
+### `PATCH /lists/:list_id`
+
+| | |
+|---|---|
+| **Auth** | Authenticated (owner only) |
+| **Tables** | `lists` |
+| **PostHog** | `list_visibility_changed` (when `visibility` changes) |
+
+Updates `name`, `description`, and/or `visibility`. The default "Want to Go" List can be renamed and re-scoped but **not** un-defaulted.
+
+**Request body (all optional):**
+```json
+{ "name": "string", "description": "string | null", "visibility": "public | private" }
+```
+
+**Success `200 OK`:** the updated list object.
+
+**Errors:**
+| Status | Code | Condition |
+|--------|------|-----------|
+| 403 | `FORBIDDEN` | Caller is not the owner |
+| 404 | `NOT_FOUND` | List does not exist |
+
+**Implementer notes:** flipping `public → private` immediately removes the list from the owner's profile for non-owners and causes existing share links to 404 (Flow 19.1). Fire `list_visibility_changed` with `{ list_id, visibility }`.
+
+---
+
+### `DELETE /lists/:list_id`
+
+| | |
+|---|---|
+| **Auth** | Authenticated (owner only) |
+| **Tables** | `lists`, `list_places` (cascade) |
+| **PostHog** | — |
+
+**Success `204 No Content`**
+
+**Errors:**
+| Status | Code | Condition |
+|--------|------|-----------|
+| 403 | `FORBIDDEN` | Caller is not the owner |
+| 409 | `CONFLICT` | Attempt to delete the default `is_default` list (not allowed — empty it or make it private instead) |
+| 404 | `NOT_FOUND` | List does not exist |
+
+**Implementer notes:** deleting a List removes its `list_places` rows (FK cascade) but **never** unsaves the underlying places (`user_places` is untouched).
+
+---
+
+### `PUT /lists/:list_id/places/:place_id`
+
+| | |
+|---|---|
+| **Auth** | Authenticated (owner only) |
+| **Tables** | `list_places`, `places` (upsert) |
+| **PostHog** | `place_added_to_list` |
+
+Adds a place to a List (idempotent). Upserts the place into `places` first if needed. Optional body `{ "position": int }` to place it at a specific spot; defaults to the end.
+
+**Success `200 OK`:** `{ "list_id": "uuid", "place_id": "string", "position": 0 }`
+
+**Errors:**
+| Status | Code | Condition |
+|--------|------|-----------|
+| 403 | `FORBIDDEN` | Caller is not the list owner |
+| 404 | `NOT_FOUND` | List does not exist |
+
+---
+
+### `DELETE /lists/:list_id/places/:place_id`
+
+| | |
+|---|---|
+| **Auth** | Authenticated (owner only) |
+| **Tables** | `list_places` |
+| **PostHog** | `place_removed_from_list` |
+
+Removes a place from a List. **Does not** unsave the place or remove it from other Lists (Flow 17.4 / Flow 19).
+
+**Success `204 No Content`**
+
+**Errors:**
+| Status | Code | Condition |
+|--------|------|-----------|
+| 403 | `FORBIDDEN` | Caller is not the list owner |
+| 404 | `NOT_FOUND` | List or membership does not exist |
+
+---
+
+### `PATCH /lists/:list_id/order`
+
+| | |
+|---|---|
+| **Auth** | Authenticated (owner only) |
+| **Tables** | `list_places` |
+| **PostHog** | — |
+
+Reorders places within a List. Body: `{ "place_ids": ["string", ...] }` — the full desired order; the server rewrites `position` to match the array index.
+
+**Success `200 OK`:** `{ "ok": true }`. Last-write-wins on concurrent reorders (Flow 17.6).
+
+---
+
+### `POST /lists/:list_id/share`
+
+| | |
+|---|---|
+| **Auth** | Authenticated (owner only) |
+| **Tables** | `invite_links` (reuses the invite-link mechanism) |
+| **PostHog** | `list_shared` |
+
+Mints (or returns) a shareable link for a **public** List, reusing the invite-link infrastructure (§8). Returns `{ "token": "string", "url": "string" }`.
+
+**Errors:**
+| Status | Code | Condition |
+|--------|------|-----------|
+| 409 | `CONFLICT` | List is `private` — make it public before sharing |
+| 403 | `FORBIDDEN` | Caller is not the owner |
+
+> **Implementer note:** add a nullable `list_id` to `invite_links` (alongside the existing `plan_id`) so a link can target a plan, a profile, or a list. Update `GET /invite-links/:token` to resolve a list target to the List view.
+
+---
+
 ## Scheduled Jobs (Lambda Cron — not Flask routes)
 
 These are not API endpoints but are critical to the product and must be implemented alongside the API.
 
 ### Plan reminders
-**Trigger:** Daily Lambda cron (e.g. every morning at 8 AM UTC)  
-**Logic:**
-1. Find timeless plans where `planned_at IS NULL AND is_cancelled = false AND created_at < (now() - 7 days)`.
-2. Insert `plan_reminder` event for each plan's organizer.
-3. Also: find timeless plans with a set date (wait — these don't exist by definition; timeless means no date). In MVP-1, timeless plans have no scheduled date, so reminders are sent based on time since creation.
 
-Actually per the spec (Flow 4.2): reminders fire "the day before the plan date, then the morning of." This implies timeless plans DO have a date — they just don't have a time. Reconsider: a plan can have a `planned_date` (date only, no time) separate from `planned_at` (datetime). However, the current schema uses a single `planned_at` timestamp.
+**Full spec:** [tech/09-materialization-workflow.md §5](09-materialization-workflow.md). Implemented in `backend/app/jobs/reminders.py`; dev-triggerable via `POST /api/v1/dev/run-reminders`.
 
-**Resolution for implementer:** In MVP-1, a "timeless" plan is `planned_at IS NULL`. Reminder logic targets plans that are timeless AND were created more than N days ago (threshold TBD). The reminder cadence from Flow 4.2 applies when a date is known — meaning: the plan has a specific date set but no time. If the schema collapses date and time into one field, treat `planned_at IS NULL` as fully timeless (no date or time known) and send a single reminder at the 7-day mark.
+**Trigger:** Lambda cron every 30–60 min (frequency only affects latency near the local-time boundaries; delivery is idempotent so over-running is safe).
+
+**Model:** A plan's three states are derived from `is_timeless` / `plan_date` / `plan_time` / `plan_time_band` (not a single `planned_at`). Reminder behavior by state, evaluated in the **place's local timezone** (`places.utc_offset_minutes`):
+
+| Plan state | Cron behavior |
+|---|---|
+| **Timeless** (no date) | **Never reminded** (M-D2a). Want-to-Go is ambient intent; the Interested signal is its only nudge. No expiry. |
+| **Tentative** (date, no when) | Organizer gets `plan_reminder_day_before` (plan_date = tomorrow) then `plan_reminder_morning` (plan_date = today). If the date passes with no when → one `plan_date_passed` card offering to recreate the intent (M-D6a). |
+| **Confirmed** (date + exact time **or** band) | Organizer **and joiners** get day-before + morning-of attendance reminders. For an **approximate** (band) plan the morning-of card carries `plan_time_band` → a "lock in an exact time?" nudge for the organizer (M-D20). Band plans never get `plan_date_passed`. |
+
+**Proposal expiry (M-D17):** the same job first sweeps `plan_time_proposals` where `status='pending' AND expires_at < now()`, flips them to `expired`, and notifies the proposer (`plan_proposal_declined`, `reason=expired`). Returned in the job's `expired` count; `POST /api/v1/dev/run-reminders` → `{day_before, morning_of, date_passed, expired}`.
+
+**Idempotency:** every reminder insert is deduped on `(user_id, type, plan_id)`, and the proposal-expiry sweep is guarded by the `pending → expired` status flip, so the job may run any number of times per day without duplicates. Past plans are excluded from the Panel by the `is_past` filter, not deleted.
+
+This replaces the earlier "resolution for implementer" note (which predated the `is_timeless`/`plan_date`/`plan_time` schema and the resolved materialization decisions).

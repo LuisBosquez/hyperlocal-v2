@@ -1,30 +1,90 @@
-import { useParams } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import api from '../lib/api';
+import api, { unwrap } from '../lib/api';
 import { queryKeys } from '../lib/queryKeys';
+import { authClient } from '../lib/authClient';
+import { useAuthStore } from '../store/authStore';
+import { Spinner, Avatar, toast } from '../components/ui';
+import type { InviteResolved } from '../types/api';
 
 export default function InvitePage() {
   const { token } = useParams<{ token: string }>();
+  const navigate = useNavigate();
+  const { session, user } = useAuthStore();
+  const [redeeming, setRedeeming] = useState(false);
 
-  const { data: invite, isLoading } = useQuery({
+  const { data: invite, isLoading } = useQuery<InviteResolved>({
     queryKey: queryKeys.inviteLink(token ?? ''),
-    queryFn: () => api.get(`/invite-links/${token}`).then((r) => r.data.data),
+    queryFn: () => unwrap(api.get(`/invite-links/${token}`)),
     enabled: !!token,
   });
 
-  if (isLoading) return <div className="p-8 text-slate-400">Loading invite…</div>;
-  if (!invite) return <div className="p-8 text-slate-400">Invite not found or expired.</div>;
+  // If already signed in, redeem immediately (follow inviter, attribute) then route on.
+  useEffect(() => {
+    if (!token || !session || !user?.handle || redeeming) return;
+    setRedeeming(true);
+    (async () => {
+      try {
+        const res = await unwrap<{ followed: boolean; plan_id: string | null; creator: { handle: string } | null }>(
+          api.post(`/invite-links/${token}/redeem`),
+        );
+        if (res.followed && res.creator) toast.success(`You're now following @${res.creator.handle}.`);
+        navigate(res.plan_id ? `/plans/${res.plan_id}` : '/map', { replace: true });
+      } catch {
+        navigate('/map', { replace: true });
+      }
+    })();
+  }, [token, session, user?.handle, redeeming, navigate]);
+
+  function signInToContinue() {
+    sessionStorage.setItem('hl_redirect', `/invite/${token}`);
+    navigate(authClient.isDev ? '/dev-login' : '/');
+  }
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-white dark:bg-zinc-950">
+        <Spinner className="h-6 w-6 text-slate-400" />
+      </div>
+    );
+  }
+
+  if (!invite || invite.expired) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-4 bg-white dark:bg-zinc-950">
+        <h1 className="text-xl font-bold text-slate-900 dark:text-zinc-100 mb-2">This invite isn’t valid</h1>
+        <p className="text-slate-500 dark:text-zinc-500 mb-6 text-sm">It may have expired — but you can still join Hyperlocal.</p>
+        <button onClick={signInToContinue} className="px-6 py-3 bg-slate-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-xl font-medium">
+          Get started
+        </button>
+      </div>
+    );
+  }
+
+  if (session && user?.handle) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-white dark:bg-zinc-950">
+        <Spinner className="h-6 w-6 text-slate-400" />
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center px-4 bg-white">
-      <h1 className="text-2xl font-bold text-slate-900 mb-2">You're invited</h1>
-      <p className="text-slate-500 mb-8 text-center">Sign in to follow and see their plans.</p>
-      <a
-        href="/"
-        className="px-6 py-3 bg-slate-900 text-white rounded-xl font-medium hover:bg-slate-700 transition-colors"
-      >
-        Sign in with Google
-      </a>
+    <div className="min-h-screen flex flex-col items-center justify-center px-4 bg-white dark:bg-zinc-950">
+      <div className="flex items-center gap-3 mb-4">
+        <Avatar user={invite.creator} size={48} />
+        <div>
+          <h1 className="text-xl font-bold text-slate-900 dark:text-zinc-100">@{invite.creator?.handle} invited you</h1>
+          {invite.place && <p className="text-sm text-slate-500 dark:text-zinc-500">…to check out {invite.place.name}</p>}
+        </div>
+      </div>
+      <p className="text-slate-500 dark:text-zinc-500 mb-8 text-center text-sm max-w-sm">
+        Sign in to follow @{invite.creator?.handle} and see their plans.
+      </p>
+      <button onClick={signInToContinue} className="px-6 py-3 bg-slate-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-xl font-medium">
+        {authClient.isDev ? 'Continue (dev sign in)' : 'Sign in with Google'}
+      </button>
     </div>
   );
 }

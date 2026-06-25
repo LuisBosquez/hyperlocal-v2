@@ -341,6 +341,10 @@ RLS policies use `auth.uid()` from the JWT to enforce:
 | `users` | Write | `auth.uid() = id` |
 | `user_places` | Read | `auth.uid() = user_id` OR mutual follow exists |
 | `user_places` | Write | `auth.uid() = user_id` |
+| `lists` | Read | `visibility = 'public'` OR owner OR mutual follow with owner |
+| `lists` | Write | `auth.uid() = owner_id` |
+| `list_places` | Read | Can read parent list → can read its memberships |
+| `list_places` | Write | Owner of the parent list |
 | `plans` | Read | `auth.uid() = organizer_id` OR mutual follow with organizer OR user is a joiner |
 | `plans` | Write | `auth.uid() = organizer_id` |
 | `plan_interests` | Read | Can read plan → can read its interests |

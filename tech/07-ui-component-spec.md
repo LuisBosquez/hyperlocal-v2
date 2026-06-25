@@ -158,11 +158,17 @@ Export: export default function OnboardingPage(props: OnboardingPageProps)
 - `usePlaceDetail(selectedPlaceId)` → place detail sheet.
 
 **Key interactions:**
-- Map panning/zooming updates `mapStore.bounds` → triggers map places re-fetch.
+- Map panning/zooming updates `mapStore.bounds`. Discovery is **not** auto-refetched on every pan — once the view moves away from the scoped area, a **"Search this area"** control appears (`AreaScopeControl`, component 19); tapping it re-scopes pins/Panel/recommendations to the new `bbox` and updates the area label (Flow 14).
+- **Locate me** control (`LocateMeButton`, component 19) recenters on the user's location, drops a "you are here" marker, and re-scopes discovery (Flow 15).
 - Clicking a pin → `mapStore.setSelectedPlace(placeId)` → `PlaceDetailView` slides up as a bottom sheet.
-- Tapping the search bar → `SearchBar` expands; Panel hides temporarily.
+- Tapping the search bar → `SearchBar` expands; Panel hides temporarily. Results may include **note matches** with provenance ("matched your note" / "matched @handle's note") — see component 18.
 - Panel toggle button (mobile) → `panelStore.setIsOpen(!isOpen)`.
 - Tapping outside an open place detail → clears `selectedPlaceId`.
+
+**Area & location notes:**
+- The floating overlay shows the reverse-geocoded **area label** (`GET /geo/reverse`) beside the recommendations tagline.
+- The **current-location marker** ("you are here") is visually distinct from place pins (e.g. a pulsing dot, not a teardrop).
+- Zoom +/− controls are desktop-only; on mobile the locate-me control takes that corner (pinch to zoom).
 
 **Visual notes:**
 - Full-bleed layout: map occupies the entire viewport.
@@ -219,11 +225,12 @@ interface PanelProps {
 type PanelCard = NotificationCardData | PlanCardData | PlaceCardData;
 ```
 
-**Data source:** `GET /panel?lat&lng&filter` via `usePanel()` hook.
+**Data source:** `GET /panel?lat&lng&bbox&cap&filter` via `usePanel()` hook. Place cards are **area-scoped** (to the current viewport / "Search this area") and **capped** (≤9); plan cards stay pinned at the top and are not area-scoped. See MVP-1 Flows 9/10/14.
 
 **Key interactions:**
 - Tapping a filter pill → `onFilterChange` → query re-fetches with new filter.
-- Scrolling the card list → no pagination in MVP-1; all cards loaded at once.
+- Re-scoping the area (pan + "Search this area", or "locate me") changes `bbox` → place cards refresh to the new area and the cap re-applies.
+- Scrolling the card list → no pagination in MVP-1; the area cap keeps the list short.
 - Tapping any card → opens the relevant detail view.
 
 **Visual notes:**
@@ -511,25 +518,30 @@ Export: export default function PlaceDetailView(props: PlaceDetailViewProps)
 
 **Screen:** Appears over `PlaceDetailView` (within the detail sheet)
 
-**Purpose:** Lightweight confirmation when a user saves a place; prompts for an optional personal note.
+**Purpose:** Lightweight confirmation when a user saves a place; prompts for an optional personal note **and which Lists to add the place to** (Flow 18).
 
 **Props interface:**
 ```ts
 interface SavePlaceModalProps {
   placeName: string;
   initialNote: string;
-  onSave: (note: string) => void;
-  onSkip: () => void;           // save without note
+  lists: Array<{ id: string; name: string; isDefault: boolean; containsPlace: boolean }>;  // from GET /users/me/lists?place_id=
+  selectedListIds: string[];    // defaults to the "Want to Go" (isDefault) list
+  onToggleList: (listId: string) => void;
+  onCreateList: () => void;     // opens ListEditor to make a new list inline
+  onSave: (note: string, listIds: string[]) => void;
+  onSkip: () => void;           // save without note (still added to selected lists)
 }
 ```
 
-**Data source:** Triggered by bookmark tap in PlaceDetailView. Calls `POST /user-places` with optional `note`.
+**Data source:** Triggered by bookmark tap in PlaceDetailView. Calls `POST /user-places` with optional `note` and `list_ids` (defaults to the "Want to Go" list when none chosen).
 
 **Key interactions:**
 - Appears inline within the PlaceDetailView's note section (not a separate modal dialog).
+- **Add to List** row: chips for the user's Lists (the default "Want to Go" pre-selected); tapping toggles membership. A "+ New list" chip opens an inline `ListEditor` (component 16). Lists already containing this place show as checked.
 - Textarea for note (max 500 chars, character counter shown at 400+).
-- "Save note" → `onSave(note)`.
-- "Skip" / "X" → `onSkip` (place is already saved at this point; this just dismisses the note prompt).
+- "Save note" → `onSave(note, selectedListIds)`.
+- "Skip" / "X" → `onSkip` (place is already saved + added to selected lists; this just dismisses the note prompt).
 
 **Visual notes:**
 - Rendered as an expandable section, not a modal overlay.
@@ -756,7 +768,7 @@ Export: export default function OwnProfilePage(props: OwnProfilePageProps)
 
 **Screen:** `/u/:handle` when relationship is `mutual`
 
-**Purpose:** Full friend profile — see their saved places on your map and upcoming plans.
+**Purpose:** Full friend profile — a profile map of all their saved places, all their Lists (public and private), and their upcoming plans. (Mutual friends see everything the public view shows plus the full saved-places set and plans.)
 
 **Props interface:**
 ```ts
@@ -786,6 +798,8 @@ interface FriendProfilePageProps {
 
 **Visual notes:**
 - Same structure as OwnProfilePage but:
+  - Leads with the **profile map** (`ProfileMap`, component 17) over the full saved-places set; pins open PlaceDetailView (Save / Add to List / Create plan).
+  - **Lists** section below the map shows all of the friend's Lists (public + private), default "Want to Go" first.
   - "Unfollow" button replaces "Edit profile".
   - No private account notice.
   - Plans show Interested/Join actions.
@@ -822,80 +836,69 @@ Export: export default function FriendProfilePage(props: FriendProfilePageProps)
 
 ---
 
-## 12. UserProfilePage (One-Way Follower)
+## 12. UserProfilePage (Non-mutual / public view)
 
-### FollowingProfilePage
+### PublicProfilePage
 
-**Screen:** `/u/:handle` when the viewer follows the profile owner but they haven't followed back
+**Screen:** `/u/:handle` when the viewer is **not** a mutual friend (a stranger or a one-way follower)
 
-**Purpose:** Curated taste profile — show Favorite Places and Want to Go without revealing personal activity.
+**Purpose:** Show the owner's **public Lists** and a **profile map** of those places — a curated, user-controlled taste snapshot. (Replaces the old auto-derived "Favorite Places / Want to Go" view; following alone no longer unlocks extra content — that's reserved for the mutual tier.)
 
 **Props interface:**
 ```ts
-interface FollowingProfilePageProps {
+interface PublicProfilePageProps {
   user: {
     handle: string;
     displayName: string;
     bio: string | null;
     avatarUrl: string | null;
   };
-  favoritePlaces: CuratedPlace[];  // up to 5; from completed plans
-  wantToGoPlaces: CuratedPlace[];  // timeless plans; place info only
-  onFollowBack: () => void;        // not shown here (they don't follow viewer)
+  relationship: 'none' | 'following';
+  lists: ProfileList[];              // PUBLIC lists only
+  onFollow: () => void;              // shown when relationship === 'none'
 }
 
-interface CuratedPlace {
-  placeId: string;
+interface ProfileList {
+  id: string;
   name: string;
-  address: string;
-  category: string;
+  description: string | null;
+  placeCount: number;
+  places: Array<{ placeId: string; name: string; category: string; lat: number; lng: number }>;
 }
 ```
 
-**Data source:** `GET /users/:handle` with `relationship: 'following'` → `favorite_places` + `want_to_go`.
+**Data source:** `GET /users/:handle` (tier `none`/`following`) → `lists` (public only). The profile map pins the union of `lists[].places`.
 
 **Key interactions:**
-- Place tap → opens PlaceDetailView (read-only; viewer can save it themselves).
-- No follow/unfollow action shown (already following; unfollow accessible via Settings or ellipsis menu).
+- **Profile map** at the top (`ProfileMap`, see component 17): pins for the union of the public lists' places. Tapping a pin opens `PlaceDetailView` where the viewer can Save / Add to a List / Create a plan (Flow 20).
+- Tapping a List opens the `ListPage` (component 16).
+- "Follow" button shown only when `relationship === 'none'`.
 
 **Visual notes:**
-- Same header as other profile pages.
-- Two distinct sections with clear labels: "Favorite Places" (heart icon) and "Want to Go" (bookmark icon).
-- Each section: horizontal scroll of small place chips or a list of cards.
-- Below profile header: a small notice "You follow @{handle}. Follow back to see their plans." replaced with a "Following" status chip.
-- No plans visible, no full place list — only the two curated lists.
+- Header (banner, avatar, name, handle, bio) as other profile pages; "Following" chip when `relationship === 'following'`.
+- **ProfileMap** below the header (rounded-2xl, h-56, overflow-hidden). Empty state when there are no public places: a muted map with centered "No public places yet."
+- **Lists** below the map: each as a `ListCard` (component 16) — name, place count, first-few thumbnails. Tap → ListPage.
+- No plans, no full saved-places list (mutual-only).
 
 **V0 prompt:**
 ```
-Build a React + Tailwind + shadcn/ui one-way-follower profile page for a social planning app. The viewer follows this user, but the user hasn't followed back — so only curated public taste data is shown.
+Build a React + Tailwind + shadcn/ui public profile page for a places social app. A non-mutual viewer sees the owner's PUBLIC lists and a map of those places.
 
 Props:
-interface FollowingProfilePageProps {
+interface PublicProfilePageProps {
   user: { handle: string; displayName: string; bio: string | null; avatarUrl: string | null; };
-  favoritePlaces: Array<{ placeId: string; name: string; address: string; category: string }>;
-  wantToGoPlaces: Array<{ placeId: string; name: string; address: string; category: string }>;
+  relationship: 'none' | 'following';
+  lists: Array<{ id: string; name: string; description: string | null; placeCount: number;
+    places: Array<{ placeId: string; name: string; category: string; lat: number; lng: number }> }>;
+  onFollow: () => void;
 }
 
 Layout (mobile-first, max-w-lg mx-auto):
+1. Profile header (banner, avatar, name, @handle, bio). If relationship==='none', show a "Follow" button (bg-zinc-900 text-white rounded-full px-4 py-1.5). If 'following', show a "Following" chip (bg-zinc-100 text-zinc-500).
+2. Profile map: a rounded-2xl h-56 overflow-hidden map placeholder (label "Profile map — places from public lists"). If no places: muted bg with centered text-sm text-zinc-400 "No public places yet."
+3. Lists: section heading "Lists" (text-sm font-semibold). For each list, a ListCard: rounded-xl border border-zinc-200 p-3 — name (font-medium), place count (text-xs text-zinc-400), and up to 3 small place thumbnails/initials. Tapping navigates to the list page.
 
-1. Profile header (same as before — banner, avatar, name, handle, bio).
-   Below handle: "You're following @{handle}" badge — text-xs bg-zinc-100 text-zinc-500 rounded-full px-2 py-0.5.
-   Below badge: small info note text-xs text-zinc-400 "Follow back to see their plans and full saved places."
-   No action buttons (viewing only; they're already following).
-
-2. "Favorite Places" section (mt-6 px-4):
-   - Heading row: flex items-center gap-1.5 mb-3. Heart icon (16px, text-rose-500). "Favorite Places" text-sm font-semibold text-zinc-700. Badge showing count (up to 5): text-xs text-zinc-400.
-   - Sub-text: text-xs text-zinc-400 mb-3 "Places @{handle} has actually been to."
-   - List: space-y-2. Each place: rounded-lg border border-zinc-200 bg-white px-3 py-2.5 flex justify-between items-center. Left: place name text-sm font-medium + address text-xs text-zinc-400 below. Right: category badge text-xs bg-zinc-100 rounded-full px-2 py-0.5.
-   - If empty: text-sm text-zinc-400 "No favorite places yet."
-
-3. "Want to Go" section (mt-6 px-4 pb-8):
-   - Heading: Bookmark icon (16px, text-indigo-500) + "Want to Go" text-sm font-semibold.
-   - Sub-text: "Places @{handle} wants to visit someday."
-   - Same list style as above.
-   - If empty: text-sm text-zinc-400 "Nothing on the list yet."
-
-Export: export default function FollowingProfilePage(props: FollowingProfilePageProps)
+Export: export default function PublicProfilePage(props: PublicProfilePageProps)
 ```
 
 ---
@@ -1174,6 +1177,114 @@ Export: export default function SettingsPage(props: SettingsPageProps)
 
 ---
 
+## 16. Lists (ListPage · ListCard · ListEditor · AddToListSheet)
+
+### ListPage
+
+**Screen:** `/lists/:listId`
+
+**Purpose:** View one List and its places (Flows 17/19). Owner gets edit affordances; any viewer of a public list gets read + "open place" actions.
+
+**Props interface:**
+```ts
+interface ListPageProps {
+  list: {
+    id: string; name: string; description: string | null;
+    visibility: 'public' | 'private'; isDefault: boolean;
+    owner: { handle: string; displayName: string; avatarUrl: string | null };
+    isOwner: boolean;
+    places: Array<{ placeId: string; name: string; category: string; address: string; position: number }>;
+  };
+  onEdit: () => void;                       // owner: open ListEditor
+  onToggleVisibility: () => void;           // owner: PATCH /lists/:id { visibility }
+  onShare: () => void;                       // owner + public: POST /lists/:id/share → ShareSheet
+  onRemovePlace: (placeId: string) => void; // owner
+  onReorder: (placeIds: string[]) => void;  // owner
+  onOpenPlace: (placeId: string) => void;   // anyone → PlaceDetailView
+}
+```
+
+**Data source:** `GET /lists/:list_id`.
+
+**Visual notes:**
+- Header: list name (text-lg font-semibold), owner row (avatar + @handle), description, and a visibility pill (owner can tap to toggle: "Public"/"Private"). Owner also sees "Edit" and (when public) "Share" (reuses `ShareSheet`).
+- Places: vertical list of `PlaceCard`s; owner sees a drag handle (reorder) and a remove (×) per row. Removing shows a toast "Removed from {list}. Still saved." (never unsaves — Flow 17.4).
+- Empty list: friendly empty state "No places in this list yet." (a valid share target; Flow 19.4).
+- Private profile + public list reached via direct link: render the list only, no profile chrome (Flow 19.2).
+
+### ListCard
+
+A compact tappable card used on profiles and pickers: list name, place count, up to 3 place thumbnails/initials, a small lock icon when private (owner view). Tapping → ListPage.
+
+### ListEditor
+
+Inline form / sheet for create + edit (Flows 17): `name` (required, ≤80), `description` (optional, ≤280), `visibility` toggle (default Private). Used by `POST /lists` and `PATCH /lists/:id`. The default "Want to Go" list can be renamed/re-scoped but the editor hides the delete action for it (Flow 17.5).
+
+### AddToListSheet
+
+The multi-select used from `SavePlaceModal` / PlaceDetailView (Flow 18): a checklist of the user's Lists (default "Want to Go" pre-checked, lists already containing the place pre-checked) plus "+ New list". Backed by `GET /users/me/lists?place_id=` and `PUT/DELETE /lists/:id/places/:placeId`.
+
+---
+
+## 17. ProfileMap
+
+**Screen:** Top of `/u/:handle` (all non-private tiers)
+
+**Purpose:** Visualize a user's places on a map (Flow 20). Pins are the union of the viewer-visible places (public lists for non-mutual; full saves for mutual).
+
+**Props interface:**
+```ts
+interface ProfileMapProps {
+  places: Array<{ placeId: string; name: string; category: string; lat: number; lng: number }>;
+  onOpenPlace: (placeId: string) => void;   // → PlaceDetailView (Save / Add to List / Create plan)
+}
+```
+
+**Visual notes:**
+- Rounded-2xl, fixed height (~h-56 mobile, taller on desktop), auto-fits bounds to the pins. Reuses the main map's pin styling.
+- Many pins → cluster/declutter at low zoom (Flow 20.2). No visible places → muted map with centered "No public places yet." (Flow 20.1).
+- Tapping a pin opens the shared `PlaceDetailView` so a viewer can act on someone else's taste.
+
+---
+
+## 18. SearchBar — notes-enriched results
+
+The existing search input gains note matches (Flow 16). Each result row may carry a provenance line:
+
+```ts
+interface SearchResult {
+  placeId: string; name: string; address: string; distanceMeters: number | null;
+  match: { kind: 'name' | 'category' | 'note'; noteSource: 'own' | 'friend' | null; noteHandle: string | null };
+}
+```
+
+**Visual notes:**
+- For `match.kind === 'note'`, show a small caption under the place name: "matched your note" (own) or "matched @{noteHandle}'s note" (friend), with a note/quote icon. **Never render the note text.**
+- Note matches rank above name/category matches; own-note above friend-note.
+- Backed by `GET /places/search` (results pre-merged + ranked by the server).
+
+---
+
+## 19. Map controls (AreaScopeControl · LocateMeButton · CurrentLocationMarker)
+
+**Screen:** Overlaid on `/map` (and reused on `ProfileMap` where noted).
+
+### AreaScopeControl ("Search this area")
+- A pill button that appears over the map only after the user pans away from the scoped area (Flow 14). Tapping sets `mapStore.bbox` to the current viewport → re-scopes pins, Panel place cards, and recommendations; updates the area label.
+- Hidden while the viewport matches the scoped area (no redundant re-scope, Flow 14.5).
+
+### LocateMeButton
+- A circular control (bottom corner; replaces the zoom cluster on mobile). Tapping requests geolocation if needed, recenters the map on the user, drops the `CurrentLocationMarker`, and re-scopes discovery (Flow 15).
+- Denied/unavailable permission → brief inline hint; map stays on the last/default viewport (Flow 15.1–15.2). Reflects `mapStore.locationMode` (`pending | granted | denied`).
+
+### CurrentLocationMarker ("you are here")
+- A pulsing dot (distinct from teardrop place pins) at the user's current location. Rendered only when location is known.
+
+### Area label
+- The reverse-geocoded neighborhood name (`GET /geo/reverse`) shown beside the recommendations tagline in the floating overlay; falls back to "this area" when unavailable (Flow 14.1).
+
+---
+
 ## Quick Reference — Component Index
 
 | Component | File | Screen | Route |
@@ -1188,10 +1299,17 @@ Export: export default function SettingsPage(props: SettingsPageProps)
 | NotificationCard | `components/panel/NotificationCard.tsx` | Panel | `/map` |
 | PlaceDetailView | `components/places/PlaceDetailView.tsx` | Over map | `/map` |
 | SavePlaceModal | `components/places/SavePlaceModal.tsx` | Within PlaceDetailView | `/map` |
+| AddToListSheet | `components/lists/AddToListSheet.tsx` | Within SavePlaceModal | `/map` |
+| AreaScopeControl | `components/map/AreaScopeControl.tsx` | Over map | `/map` |
+| LocateMeButton | `components/map/LocateMeButton.tsx` | Over map | `/map` |
 | CreatePlanFlow | `components/plans/CreatePlanFlow.tsx` | Modal over map | `/map` |
 | PlanDetailPage | `pages/PlanDetailPage.tsx` | Plan detail | `/plans/:planId` |
+| ListPage | `pages/ListPage.tsx` | List detail | `/lists/:listId` |
+| ListCard | `components/lists/ListCard.tsx` | Profiles, pickers | `/u/:handle` |
+| ListEditor | `components/lists/ListEditor.tsx` | Create/edit list | `/lists/:listId`, `/u/:handle` |
+| ProfileMap | `components/profile/ProfileMap.tsx` | Top of profile | `/u/:handle` |
 | OwnProfilePage | `pages/UserProfilePage.tsx` | Own profile | `/u/:handle` |
 | FriendProfilePage | `pages/UserProfilePage.tsx` | Friend profile | `/u/:handle` |
-| FollowingProfilePage | `pages/UserProfilePage.tsx` | Follower-only profile | `/u/:handle` |
+| PublicProfilePage | `pages/UserProfilePage.tsx` | Non-mutual profile | `/u/:handle` |
 | InviteLinkPage | `pages/InvitePage.tsx` | Invite landing | `/invite/:token` |
 | SettingsPage | `pages/SettingsPage.tsx` | Settings | `/settings` |

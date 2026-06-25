@@ -44,9 +44,9 @@ These capability areas are not part of the current scope but represent natural e
 
 - **Organizer controls for Joiners:** As plans grow in size and the social graph scales, organizers will want more structure over what participants can change. A future layer could let organizers decide whether Joiners can propose times, places, or both — preserving ownership of the plan while enabling the collaboration that makes it better. The natural arc: *Interested* as passive desire, *Joined* as active investment, and organizer permissions as the structure that makes collaboration work at scale.
 
-- **Expanded follower visibility:** In MVP-1, one-way followers see a curated profile view — Favorite Places and Want to Go. In V2/V3, users could opt into making certain plans public or open, extending limited plan visibility to followers without requiring a mutual follow. A natural progression from ambient taste-sharing to broader community discovery.
+- **Expanded follower visibility:** In MVP-1, anyone can see a user's public **Lists** and the places in them on the profile map — a user-curated snapshot of taste. In V2/V3, users could opt into making certain plans public or open, extending limited plan visibility to followers without requiring a mutual follow. A natural progression from ambient taste-sharing to broader community discovery.
 
-- **Place network as social infrastructure:** The accumulated place data across users — saves, plans, attendance history — becomes a foundation for richer V2/V3 surfaces: shared place lists between friends, place endorsements ("3 friends have been here"), and discovery feeds built on where people you trust have been or want to go. The place, not the plan, becomes the long-term connective tissue of the network.
+- **Place network as social infrastructure:** The accumulated place data across users — saves, notes, Lists, plans, attendance history — becomes a foundation for richer V2/V3 surfaces. MVP-1 already introduces the curation primitive (**Lists**) and treats personal **notes** as searchable, differentiated data (searching "cortado" finds the place a friend noted that about — something a generic map can't do). The later surfaces build on top: collaborative/shared Lists, place endorsements ("3 friends have been here"), and discovery feeds built on where people you trust have been or want to go. The place, not the plan, becomes the long-term connective tissue of the network.
 
 ---
 
@@ -59,8 +59,8 @@ Social plans between friends and acquaintances fail to materialize not because p
 
 | Release | Name | Focus |
 |---|---|---|
-| Alpha (MVP-1) | Core product | Establish the core loop: social graph, place saving, plan creation, ambient visibility |
-| Beta (MVP-2) | Functionality enhancement | Deepen engagement, add the time layer: re-engagement system, time proposals, calendar integration |
+| Alpha (MVP-1) | Core product | Establish the core loop: social graph, place saving, plan creation, ambient visibility, **collaborative materialization** (anyone proposes a time; coarse "afternoon"-style times) |
+| Beta (MVP-2) | Functionality enhancement | Deepen engagement: re-engagement system + the calendar layer (time-first plans, availability). *(Time proposals moved into Alpha.)* |
 | V3 | Market expansion | Apple Calendar / CalDAV, Outlook / Microsoft 365, broader platform reach |
 
 ---
@@ -113,6 +113,8 @@ Social plans between friends and acquaintances fail to materialize not because p
 | [Product FAQ](./product-faq.md) | Frequently asked questions document to add more insight into the product. |
 | [The triple constraint of hangin' out](./wh3_whitepaper.pdf) | A thought analysis of the different variables to plan an activity. |
 | [MVP-1 Spec](./specs/mvp-1.md) | Scope, flows, and success metrics for Alpha. |
+| [MVP-1 User Journeys](./4-user-journeys-mvp1.md) | Every Alpha flow as a full journey: happy path, sad paths, and standard resolutions. |
+| [Materialization Workflow Worksheet](./specs/materialization-workflow.md) | Open decision register for the plan-materialization loop (Flows 4.2/8.2) — blocks its tech doc. |
 | [Beta-1 Spec](./specs/beta-1.md) | Scope, flows, and success metrics for Beta. |
 
 ---

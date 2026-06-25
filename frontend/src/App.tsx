@@ -13,10 +13,17 @@ import InvitePage from './pages/InvitePage';
 import SettingsPage from './pages/SettingsPage';
 import DevLogin from './pages/DevLogin';
 import { useAuth } from './hooks/useAuth';
+import { ToastHost, OfflineBanner } from './components/ui';
 
 function AuthBootstrap({ children }: { children: React.ReactNode }) {
   useAuth();
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      <ToastHost />
+      <OfflineBanner />
+    </>
+  );
 }
 
 const router = createBrowserRouter([
@@ -48,9 +55,16 @@ const router = createBrowserRouter([
       {
         element: <HandleGuard />,
         children: [
-          { path: '/map', element: <MapPage /> },
-          { path: '/plans/:planId', element: <PlanDetailPage /> },
-          { path: '/places/:placeId', element: <PlaceDetailPage /> },
+          // MapPage is a persistent shell (map + panel); the detail routes render
+          // as overlays through its <Outlet>, keeping the map mounted underneath.
+          {
+            element: <MapPage />,
+            children: [
+              { path: '/map', element: null },
+              { path: '/plans/:planId', element: <PlanDetailPage /> },
+              { path: '/places/:placeId', element: <PlaceDetailPage /> },
+            ],
+          },
           { path: '/settings', element: <SettingsPage /> },
         ],
       },

@@ -1,35 +1,25 @@
-import os
-from flask import Blueprint, jsonify, request, g
+from flask import Blueprint, request, g
+
 from ..middleware import require_auth
+from ..errors import ok, err
+from ..telemetry import track
 
 analytics_bp = Blueprint('analytics', __name__, url_prefix='/api/v1/analytics')
 
-_posthog = None
-
-
-def _get_posthog():
-    global _posthog
-    if _posthog is None:
-        from posthog import Posthog
-        _posthog = Posthog(
-            project_api_key=os.environ.get('POSTHOG_PROJECT_API_KEY', ''),
-            host=os.environ.get('POSTHOG_HOST', 'https://us.posthog.com'),
-        )
-    return _posthog
+# Client-originated events allowed through the proxy. Server-truth events
+# (plan_created, plan_joined, ...) are emitted server-side only.
+CLIENT_EVENTS = {'user_active_session', 'invite_link_shared', 'page_view'}
 
 
 @analytics_bp.route('/capture', methods=['POST'])
 @require_auth
 def capture_event():
-    """Proxy client-side PostHog events through the server for data integrity."""
-    if os.environ.get('FLASK_ENV') == 'development':
-        return jsonify({'data': None, 'error': None}), 200
-
+    """Proxy client events through the server (tech/04 §10). Always succeeds
+    from the client's perspective — telemetry never breaks UX (P9 / X.5)."""
     body = request.get_json(silent=True) or {}
     event = body.get('event')
-    properties = body.get('properties', {})
     if not event:
-        return jsonify({'data': None, 'error': {'code': 'MISSING_EVENT'}}), 400
-
-    _get_posthog().capture(g.user_id, event, properties)
-    return jsonify({'data': None, 'error': None}), 200
+        return err('INVALID_REQUEST', 400, 'event is required.')
+    if event in CLIENT_EVENTS:
+        track(event, g.user_id, body.get('properties') or {})
+    return ok(None, 204)

@@ -5,7 +5,7 @@ def register_blueprints(app: Flask) -> None:
     import os
     from .auth import auth_bp
     from .users import users_bp
-    from .places import places_bp
+    from .places import places_bp, user_places_bp
     from .plans import plans_bp
     from .social import social_bp
     from .interests import interests_bp
@@ -17,6 +17,7 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(auth_bp)
     app.register_blueprint(users_bp)
     app.register_blueprint(places_bp)
+    app.register_blueprint(user_places_bp)
     app.register_blueprint(plans_bp)
     app.register_blueprint(social_bp)
     app.register_blueprint(interests_bp)

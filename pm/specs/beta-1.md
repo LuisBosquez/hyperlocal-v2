@@ -26,7 +26,7 @@ Beta does not introduce a new interaction paradigm. The map, The Panel, plans, a
 |---|---|
 | Organizer cancels a plan (Flow 5) | Cancellation now triggers a re-engagement prompt for the organizer |
 | Joiner joins a plan | Joiners can now cancel their join — new "leave plan" flow, also with re-engagement |
-| Timeless plan → organizer adds time (Flow 4.2) | Joiners and Interested users can now propose a time — organizer reviews and accepts |
+| Timeless plan → organizer adds time (Flow 4.2) | *(Collaborative time proposals shipped in Alpha — Flows 4.3/4.4. No longer Beta scope.)* |
 | Interested → notification loop (Flow 8.2) | Organizer accepting a time proposal triggers the same notification broadcast |
 | The Panel | Two new card types: Re-plan prompt card · Proposed time notification card |
 
@@ -41,7 +41,7 @@ These sit alongside the Alpha principles — they narrow the focus of Beta witho
 - **Cancellation is a pivot, not an ending.** The social intent behind a committed plan is durable. When a plan falls apart, that signal deserves a forward path, not a dead end.
 - **Re-engagement should cost almost nothing.** The moment after cancellation is when friction is highest and motivation is lowest. A re-plan that requires three decisions will fail. One tap is the bar.
 - **The system already knows what you both want.** Both users have a saved places list, a plan history, and mutual interests. The platform has enough context to make a useful suggestion without asking — so it should.
-- **Proposals close the loop.** The original materialization loop had one bottleneck: the organizer. Enabling anyone who has committed to propose a time distributes that responsibility without taking control away from the organizer.
+- **Proposals close the loop.** The original materialization loop had one bottleneck: the organizer. Enabling anyone who has committed to propose a time distributes that responsibility without taking control away from the organizer. *(This principle was realized early — collaborative time proposals shipped in Alpha, Flows 4.3/4.4. Beta builds on the time graph it produces.)*
 - **No guilt, no dark patterns.** Every cancellation flow must give a clean exit with zero social pressure attached. The re-engagement prompt is a forward-looking offer, not a retention tactic.
 - **Place as Idea, Time as Commitment.** Saving a place is the first gesture of a potential plan — a location where you could hang out in the future, with no time and no people yet attached. A saved place is an idea. For that idea to become a plan, it needs two things: time and people. Beta introduces the concept of a **Stage 1 Plan** — a plan that has fulfilled one of those two requirements but not yet both. Stage 1 plans are the product's primary tool for converting social intent into real hangouts.
 - **Shrink the guilt window to near-zero.** Cancelling a committed plan carries psychological weight. Guilt blocks action — a user who feels bad about cancelling is less likely to re-engage immediately, which causes plans to die rather than reschedule. Beta's job is to do as much work as possible so that after a cancellation, both users find themselves in a Stage 1 plan together before the social awkwardness has time to set in. Every step in the cancellation-to-replan flow should feel like relief, not obligation.
@@ -67,13 +67,9 @@ A Stage 1 Plan has fulfilled one of the two requirements for a full plan (time +
 
 **Time-first (the calendar path):** A user marks a time slot as available for a hangout. The product suggests places based on both users' locations, overlapping saved places, business opening hours, and reasonable hours for public locations. No specific person is attached yet — or optionally, the user pre-selects a friend before browsing time slots. A time-first plan becomes a full plan when a place is selected.
 
-### Time proposals
+### Time proposals — ✅ shipped in Alpha (no longer Beta scope)
 
-- Joiners and Interested users can propose a time on any timeless or tentative plan
-- Organizer receives a Notification card when a proposal is submitted
-- Organizer can accept, set their own time, or ignore each proposal from the plan detail page
-- On acceptance: all Joined and Interested users receive a Notification card with the confirmed time
-- On organizer setting their own time while proposals exist: proposals are cleared and all Joined + Interested are notified (same behavior as Alpha Flow 4.2)
+> Collaborative time proposals were **pulled forward into Alpha** with a richer design than originally specced here: a proposer floats **multiple** options (exact or coarse band) with an expiry, and the organizer accepts one. See [MVP-1 Flows 4.3/4.4](mvp-1.md), the [materialization worksheet M-D14–M-D20](materialization-workflow.md), and [tech/09 §10–11](../../tech/09-materialization-workflow.md). The Beta surfaces below (Flow B6/B7, the Time-Proposal UI, the related metrics and telemetry) are **superseded** and retained only as a record. Beta's remaining proposal-adjacent scope is the **calendar / time-first** path (Stage 1 time-first + Flow B8).
 
 ### Calendar Layer
 
@@ -172,32 +168,9 @@ This same card surface is used for the proactive homepage re-engagement case (Fl
 
 ---
 
-### Time Proposal UI (Plan Detail Page)
+### Time Proposal UI & Organizer Review — ✅ superseded by Alpha
 
-On any timeless or tentative plan where the viewer is Joined or Interested, a secondary action appears below the main plan details:
-
-**"Propose a time"** — opens the same date pill + 30-minute block time picker from Alpha Flow 4.1. Proposed time must fall within the place's opening hours and in the future.
-
-After submitting:
-- Toast confirms: "Your proposal was sent to [organizer handle]."
-- The button changes to "Time proposed · [day, time]" — tappable to retract the proposal.
-- A user can have one active proposal per plan at a time.
-
----
-
-### Organizer's Proposed Time Review (Plan Detail Page)
-
-When one or more joiners have proposed a time, the organizer's plan detail page shows a new section:
-
-**"Proposed times"** — lists each proposal with the proposer's handle and suggested time. Newest first. Up to 3 visible; if more exist, a "+N more" indicator links to the full list.
-
-Per proposal, the organizer can:
-
-- **Accept** — sets the plan time, notifies all Joined + Interested, clears the proposals section
-- **Set my own time** — opens the standard Alpha time picker; notifies all Joined + Interested; clears all pending proposals
-- **Ignore** — removes that proposal from the list; proposer is not notified; plan remains timeless
-
-The organizer also receives a Notification card: "[handle] proposed [day] at [time] for [plan name]."
+> These two surfaces shipped in **Alpha** (richer than this draft): the proposer floats **multiple** options with an expiry, and the organizer accepts one from a "Proposed times" review section. See [MVP-1 §Key UI Surfaces / Flows 4.3–4.4](mvp-1.md) and [tech/09 §10](../../tech/09-materialization-workflow.md). The original Beta sketch (single proposal, "+N more", organizer Accept / Set-my-own / Ignore) is retained below in the Flows section as a record only.
 
 ---
 
@@ -309,7 +282,9 @@ The compatibility matching algorithm runs periodically for mutual friend pairs i
 
 ---
 
-### Flow B6: Proposing a Time (Joiner or Interested User)
+> **⚠️ Flows B6 & B7 are superseded by Alpha (Flows 4.3/4.4).** Collaborative time proposals shipped in Alpha with a richer model — a proposer floats **multiple** options (exact or coarse band) with a proposer-set expiry, and the organizer accepts one, declines all, or lets them expire. The two flows below are kept only as the original Beta sketch. See [MVP-1 Flows 4.3/4.4](mvp-1.md) and [tech/09 §10](../../tech/09-materialization-workflow.md).
+
+### Flow B6: Proposing a Time (Joiner or Interested User) — superseded
 
 1. User opens the plan detail page for a timeless or tentative plan where they are Joined or Interested.
 2. A secondary action "Propose a time" is visible below the plan details.
@@ -326,7 +301,7 @@ The compatibility matching algorithm runs periodically for mutual friend pairs i
 
 ---
 
-### Flow B7: Organizer Reviews a Proposed Time
+### Flow B7: Organizer Reviews a Proposed Time — superseded
 
 1. Organizer opens their plan detail page (via The Panel or a Notification card).
 2. A "Proposed times" section lists each proposal with the proposer's handle and time. Newest first; up to 3 shown with a "+N more" link.
@@ -369,13 +344,15 @@ Beta metrics are additive — all Alpha metrics continue to apply.
 | Cancellation-to-replan conversion rate | ≥25% of re-engagement events result in a new plan created within 7 days |
 | Re-plan materialization rate | ≥40% of re-plans receive a confirmed time within 14 days (vs. ~30% Alpha baseline for organic timeless plans) |
 
-### Time proposals
+### Time proposals — ✅ moved to Alpha
+
+> These metrics now belong to **Alpha** (collaborative materialization). Targets retained for reference; they are tracked against the Alpha implementation.
 
 | Metric | Target |
 |---|---|
-| Time proposal submission rate | ≥15% of eligible plan views (Joined or Interested, timeless plan) result in a proposal submitted |
+| Time proposal submission rate | ≥15% of eligible plan views (Joined or Interested, un-timed plan) result in a proposal submitted |
 | Time proposal acceptance rate | ≥50% of submitted proposals are accepted by the organizer |
-| Proposal-to-organizer action time | Median ≤48 hours from proposal submission to accept, modify, or ignore |
+| Proposal-to-organizer action time | Median ≤48 hours from proposal submission to accept, decline, or expiry |
 
 ### Proactive homepage card
 
@@ -407,11 +384,7 @@ All Alpha telemetry events remain unchanged. Beta adds:
 | `replan_created` | A plan is created from the Re-plan Prompt Sheet | Cancellation-to-replan conversion rate |
 | `compatible_plan_surfaced` | Homepage Re-plan card shown without a prior cancellation | Homepage card open rate (denominator) |
 | `compatible_plan_card_opened` | User taps the homepage Re-plan card | Homepage card open rate (numerator) |
-| `time_proposed` | A joiner or Interested user submits a time proposal | Proposal submission rate |
-| `time_proposal_accepted` | Organizer accepts a proposal | Proposal acceptance rate |
-| `time_proposal_modified` | Organizer sets own time while proposals are pending | Informs accept vs. modify preference |
-| `time_proposal_ignored` | Organizer dismisses a specific proposal | Friction signal; informs nudge timing |
-| `time_proposal_retracted` | Proposer retracts an active proposal | Engagement quality signal |
+| `time_proposed`, `time_proposal_accepted`, `time_proposal_declined`, `time_proposal_retracted` | *(Moved to Alpha — collaborative time proposals. Defined in the [MVP-1 telemetry table](mvp-1.md). The old `time_proposal_modified` / `time_proposal_ignored` are replaced by the Alpha set; expiry is folded into the reminder cron's `expired` count.)* | — |
 | `calendar_connected` | User completes Google Calendar OAuth and selects calendars | Calendar adoption rate |
 | `calendar_slot_tapped` | User taps a free time slot in the calendar view | Time-first plan funnel entry |
 | `time_first_plan_created` | A plan is created from the time-first flow (Flow B8) | Calendar-to-plan conversion rate |
@@ -446,6 +419,6 @@ The compatibility matching algorithm (Flow B3) runs as a lightweight Postgres qu
 
 3. **Does the friend see cancellation context on the re-plan?** When User A creates a re-plan after cancelling, User B receives "re-planned with you." Should B see that the original plan was cancelled, or is that unnecessary and slightly awkward? Current stance: no — the re-plan is a fresh start, not a thread on what went wrong.
 
-4. **Multiple proposers, noisy review view.** If 5 people all propose times, the organizer's plan detail gets crowded. Proposed: cap visible proposals at 3 on the plan detail page; additional proposals accepted but collapsed under "+N more." Confirm this cap before building.
+4. ~~**Multiple proposers, noisy review view.**~~ **Resolved in Alpha (M-D16):** one *pending* proposal per plan — the first proposer owns the slot (with multiple options) until it resolves, so the organizer never sees a crowded multi-proposer list. No "+N more" cap needed.
 
 5. **Re-engagement between two joiners.** If two joiners both leave the same plan, they share a real social signal — but re-engagement currently only surfaces between the canceller and the organizer. This mutual joiner case is potentially valuable but out of scope for Beta. Flag for Beta-2.

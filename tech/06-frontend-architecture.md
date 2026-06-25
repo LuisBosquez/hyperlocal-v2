@@ -91,8 +91,9 @@ All routing is handled by React Router v6 with `createBrowserRouter`. No hash ro
 /onboarding               OnboardingPage      Auth-required, handle-not-set guard
 /map                      MapPage             Auth-required, handle-required guard
 /plans/:planId            PlanDetailPage      Auth-required, handle-required guard
+/lists/:listId            ListPage            Public for public lists; owner-only for private (Flows 17/19)
 /u/:handle                UserProfilePage     Public (response varies by relationship tier)
-/invite/:token            InvitePage          Public
+/invite/:token            InvitePage          Public (token may resolve to a plan, profile, or public list)
 /settings                 SettingsPage        Auth-required, handle-required guard
 ```
 
@@ -121,6 +122,7 @@ createBrowserRouter([
     ],
   },
   { path: '/u/:handle', element: <UserProfilePage /> },
+  { path: '/lists/:listId', element: <ListPage /> },   // public; ListPage 403s private lists for non-owners
   { path: '/invite/:token', element: <InvitePage /> },
 ])
 ```
@@ -138,11 +140,15 @@ React Query owns all data fetched from the Flask API. It handles caching, backgr
 | Query key (from `queryKeys.ts`) | Endpoint | Notes |
 |---|---|---|
 | `['user', 'me']` | `GET /users/me` | Loaded on app boot after auth |
-| `['panel', lat, lng, filter]` | `GET /panel` | Primary feed; lat/lng from Zustand mapStore; re-fetched on viewport change |
-| `['map', 'places', bounds]` | `GET /users/me/friends/places` | Fetched when viewport bounds change; debounced 300ms |
+| `['panel', bbox, filter]` | `GET /panel` | Primary feed; `bbox` is the scoped area (default = area around location); place cards area-scoped + capped. Re-fetched on "Search this area" / locate-me, not on every pan |
+| `['map', 'places', bbox]` | `GET /users/me/friends/places` | Friends' pins for the scoped area (capped); refetched on area re-scope |
 | `['place', placeId]` | `GET /places/:place_id` | Fetched on pin click or card tap |
-| `['places', 'search', q, lat, lng]` | `GET /places/search` | Debounced 400ms; enabled only when `q.length >= 2` |
-| `['places', 'contextual', lat, lng]` | `GET /places/contextual` | Fetched once on map load with user coordinates |
+| `['places', 'search', q, lat, lng]` | `GET /places/search` | Debounced; enabled when `q.length >= 2`. Results include name/category **and** note matches (own + mutual friends') with provenance |
+| `['places', 'contextual', bbox]` | `GET /places/contextual` | Recommendations for the scoped area (capped ≤9); refetched on area re-scope / refresh button |
+| `['geo', 'reverse', lat, lng]` | `GET /geo/reverse` | Area label for the overlay; coarse-cached |
+| `['lists', 'me', placeId?]` | `GET /users/me/lists` | Own lists (+ `contains_place` when `placeId` set) for the Add-to-List picker |
+| `['lists', 'user', handle]` | `GET /users/:handle/lists` | A profile's visible lists |
+| `['list', listId]` | `GET /lists/:list_id` | ListPage + shared-link view |
 | `['plan', planId]` | `GET /plans/:plan_id` | Fetched on PlanDetailPage mount |
 | `['plan', planId, 'joins']` | `GET /plans/:plan_id/joins` | Fetched on PlanDetailPage; invalidated by Realtime |
 | `['plan', planId, 'interests']` | `GET /plans/:plan_id/interests` | Organizer only; invalidated by Realtime |
@@ -176,12 +182,19 @@ Zustand stores hold UI state that is not persisted to the server and is not serv
 interface MapStore {
   center: [number, number];       // [lng, lat]
   zoom: number;
-  bounds: BBox | null;            // current viewport bounds; triggers map places re-fetch
+  bounds: BBox | null;            // live viewport bounds (updates on every pan)
+  scopedBbox: BBox | null;        // the area discovery is scoped to; changes only on "Search this area" / locate-me
+  areaLabel: string | null;       // reverse-geocoded label for the scoped area
   selectedPlaceId: string | null; // which pin is currently active
+  userLocation: [number, number] | null;          // for the "you are here" marker
+  locationMode: 'pending' | 'granted' | 'denied';  // drives LocateMeButton state
   setViewport: (vp: Partial<MapStore>) => void;
+  searchThisArea: () => void;     // copies current `bounds` → `scopedBbox`, refetches discovery
+  locateMe: () => void;           // requests geolocation, recenters, sets userLocation + scopedBbox
   setSelectedPlace: (id: string | null) => void;
 }
 ```
+`scopedBbox` is the key decoupling: panning updates `bounds` (which only surfaces the "Search this area" affordance) but does **not** refetch discovery — that happens on `searchThisArea()` / `locateMe()`. This prevents the list-flash and request-storm behavior and matches Flow 14.
 
 **`panelStore`** (`src/store/panelStore.ts`):
 ```ts
