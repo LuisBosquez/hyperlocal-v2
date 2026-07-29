@@ -3,21 +3,22 @@ import api, { unwrap, apiError } from '../lib/api';
 import { queryKeys } from '../lib/queryKeys';
 import { useMapStore } from '../store/mapStore';
 import { useUIStore } from '../store/uiStore';
-import { useDebouncedValue } from './useDebouncedValue';
 import { toast } from '../components/ui';
 import type { PanelResponse, PlanCardData } from '../types/api';
 
 export function usePanel() {
-  const center = useMapStore((s) => s.center);
+  // Keyed on the *scoped* area, not the live center — so panning never refires
+  // the query (the list can't flash). It re-fetches only on "Search this area" /
+  // locate-me, which update scopedCenter/scopedBbox. Place cards come back
+  // area-scoped + capped from the server.
+  const [lng, lat] = useMapStore((s) => s.scopedCenter);
+  const scopedBbox = useMapStore((s) => s.scopedBbox);
   const { activeFilter } = useUIStore();
-  // Debounce the map center so panning doesn't refire the query every frame,
-  // and keep the previous results visible while the next page loads — together
-  // these stop the list from flashing as the user moves the map.
-  const [lng, lat] = useDebouncedValue(center, 350);
+  const bbox = scopedBbox ? scopedBbox.join(',') : undefined;
 
   return useQuery<PanelResponse>({
-    queryKey: queryKeys.panel(lat, lng, activeFilter),
-    queryFn: () => unwrap(api.get('/panel', { params: { lat, lng, filter: activeFilter } })),
+    queryKey: queryKeys.panel(lat, lng, bbox, activeFilter),
+    queryFn: () => unwrap(api.get('/panel', { params: { lat, lng, bbox, filter: activeFilter } })),
     staleTime: 15_000,
     placeholderData: keepPreviousData,
   });

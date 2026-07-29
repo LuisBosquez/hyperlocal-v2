@@ -12,6 +12,26 @@ export function useFriends() {
   });
 }
 
+type FollowEdge = PublicUser & { follows_me: boolean; i_follow: boolean };
+
+export function useFollowers(enabled = true) {
+  return useQuery<FollowEdge[]>({
+    queryKey: queryKeys.followers(),
+    queryFn: () => unwrap(api.get('/follows/followers')),
+    staleTime: 60_000,
+    enabled,
+  });
+}
+
+export function useFollowing(enabled = true) {
+  return useQuery<FollowEdge[]>({
+    queryKey: queryKeys.following(),
+    queryFn: () => unwrap(api.get('/follows/following')),
+    staleTime: 60_000,
+    enabled,
+  });
+}
+
 export function useUserSearch(q: string) {
   return useQuery<(PublicUser & { is_private: boolean })[]>({
     queryKey: ['users', 'search', q],

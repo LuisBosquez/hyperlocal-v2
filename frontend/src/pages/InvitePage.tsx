@@ -20,17 +20,29 @@ export default function InvitePage() {
     enabled: !!token,
   });
 
-  // If already signed in, redeem immediately (follow inviter, attribute) then route on.
+  // If already signed in, redeem immediately (follow inviter, attribute) then
+  // route to the shared object: plan → list → place → map (spec §10).
   useEffect(() => {
     if (!token || !session || !user?.handle || redeeming) return;
     setRedeeming(true);
     (async () => {
       try {
-        const res = await unwrap<{ followed: boolean; plan_id: string | null; creator: { handle: string } | null }>(
-          api.post(`/invite-links/${token}/redeem`),
-        );
+        const res = await unwrap<{
+          followed: boolean;
+          plan_id: string | null;
+          list_id: string | null;
+          place_id: string | null;
+          creator: { handle: string } | null;
+        }>(api.post(`/invite-links/${token}/redeem`));
         if (res.followed && res.creator) toast.success(`You're now following @${res.creator.handle}.`);
-        navigate(res.plan_id ? `/plans/${res.plan_id}` : '/map', { replace: true });
+        const dest = res.plan_id
+          ? `/plans/${res.plan_id}`
+          : res.list_id
+            ? `/lists/${res.list_id}`
+            : res.place_id
+              ? `/places/${res.place_id}`
+              : '/map';
+        navigate(dest, { replace: true });
       } catch {
         navigate('/map', { replace: true });
       }
@@ -77,6 +89,7 @@ export default function InvitePage() {
         <div>
           <h1 className="text-xl font-bold text-slate-900 dark:text-zinc-100">@{invite.creator?.handle} invited you</h1>
           {invite.place && <p className="text-sm text-slate-500 dark:text-zinc-500">…to check out {invite.place.name}</p>}
+          {invite.list && <p className="text-sm text-slate-500 dark:text-zinc-500">…to see their list “{invite.list.name}”</p>}
         </div>
       </div>
       <p className="text-slate-500 dark:text-zinc-500 mb-8 text-center text-sm max-w-sm">
@@ -85,6 +98,15 @@ export default function InvitePage() {
       <button onClick={signInToContinue} className="px-6 py-3 bg-slate-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-xl font-medium">
         {authClient.isDev ? 'Continue (dev sign in)' : 'Sign in with Google'}
       </button>
+      {/* Public lists are world-viewable — no account needed (Flow 19.2). */}
+      {invite.list && (
+        <button
+          onClick={() => navigate(`/lists/${invite.list!.list_id}`)}
+          className="mt-3 text-sm text-indigo-500 hover:underline"
+        >
+          Just show me the list
+        </button>
+      )}
     </div>
   );
 }

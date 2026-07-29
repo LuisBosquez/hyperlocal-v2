@@ -1,7 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { useContextual } from '../../hooks/usePlaces';
-import { useMapStore } from '../../store/mapStore';
+import { useContextual, useAreaLabel } from '../../hooks/usePlaces';
 import { queryKeys } from '../../lib/queryKeys';
 import { formatDistance, closingHint } from '../../lib/format';
 
@@ -11,13 +10,12 @@ import { formatDistance, closingHint } from '../../lib/format';
 export function ContextualStrip() {
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { center } = useMapStore();
-  const [lng, lat] = center;
-  const { data, isFetching } = useContextual(lat, lng);
+  const { data, isFetching } = useContextual();
+  const { data: area } = useAreaLabel();
 
   function refresh() {
     qc.invalidateQueries({ queryKey: queryKeys.contextualAll() });
-    qc.invalidateQueries({ queryKey: queryKeys.mapPins() });
+    qc.invalidateQueries({ queryKey: queryKeys.mapPinsAll() });
   }
 
   if (!data) return null;
@@ -25,7 +23,12 @@ export function ContextualStrip() {
   return (
     <div>
       <div className="flex items-center justify-between gap-2 mb-1.5">
-        <p className="min-w-0 truncate text-xs text-slate-500 dark:text-zinc-400">{data.tagline}</p>
+        <p className="min-w-0 truncate text-xs text-slate-500 dark:text-zinc-400">
+          {data.tagline}
+          {area?.area_label && (
+            <span className="text-slate-400 dark:text-zinc-500"> · 📍 {area.area_label}</span>
+          )}
+        </p>
         <button
           onClick={refresh}
           disabled={isFetching}

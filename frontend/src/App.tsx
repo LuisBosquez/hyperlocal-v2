@@ -9,6 +9,8 @@ import MapPage from './pages/MapPage';
 import PlanDetailPage from './pages/PlanDetailPage';
 import PlaceDetailPage from './pages/PlaceDetailPage';
 import ProfilePage from './pages/ProfilePage';
+import ListPage from './pages/ListPage';
+import ListsPage from './pages/ListsPage';
 import InvitePage from './pages/InvitePage';
 import SettingsPage from './pages/SettingsPage';
 import DevLogin from './pages/DevLogin';
@@ -66,9 +68,11 @@ const router = createBrowserRouter([
             ],
           },
           { path: '/settings', element: <SettingsPage /> },
+          { path: '/lists', element: <ListsPage /> },
         ],
       },
       { path: '/u/:handle', element: <ProfilePage /> },
+      { path: '/lists/:listId', element: <ListPage /> },
       { path: '/invite/:token', element: <InvitePage /> },
     ],
   },

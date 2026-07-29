@@ -7,7 +7,7 @@ from ..extensions import get_supabase
 from ..errors import ok, err
 from ..domain import (
     mutual_friend_ids, users_by_ids, distance_m, plan_state, time_granularity,
-    is_past, is_unconfirmed,
+    is_past, is_unconfirmed, parse_bbox, in_bbox, clamp_cap,
 )
 
 feed_bp = Blueprint('feed', __name__, url_prefix='/api/v1')
@@ -50,6 +50,8 @@ def get_panel():
     filter_param = request.args.get('filter', 'all')
     lat = request.args.get('lat', type=float)
     lng = request.args.get('lng', type=float)
+    bbox = parse_bbox(request.args.get('bbox'))
+    cap = clamp_cap(request.args.get('cap', type=int))
 
     sb = get_supabase()
     cards: list[dict] = []
@@ -178,10 +180,14 @@ def get_panel():
                     'lat': p['lat'], 'lng': p['lng'],
                 })
 
+        # Area scoping (Flow 14): keep only cards inside the current area box.
+        if bbox:
+            place_cards = [c for c in place_cards if in_bbox(c['lat'], c['lng'], bbox)]
         # Proximity ascending when we have a location, else recency (J11.5 / P4)
         if lat is not None and lng is not None:
             place_cards.sort(key=lambda c: c['distance_meters'] or 0)
-        cards += place_cards
+        # Cap so the list stays scannable ("show 6–9 nearby", Flow 9/10).
+        cards += place_cards[:cap]
 
     return ok({
         'cards': cards,

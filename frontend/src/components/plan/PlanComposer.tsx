@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { OpeningPeriod, TimeBand } from '../../types/api';
 import { Sheet, toast } from '../ui';
+import { useOpenFriends } from '../../hooks/useSignal';
 import { todayISO, addDaysISO, nextWeekendISO, timeSlotsFor, formatTime, formatDate } from '../../lib/format';
 
 export interface WhenSelection {
@@ -169,7 +170,13 @@ interface Props {
   openingHours?: OpeningPeriod[] | null;
   initialDate?: string | null;
   submitting?: boolean;
-  onSubmit: (vars: { plan_date: string | null; plan_time: string | null; plan_time_band: TimeBand | null; is_timeless: boolean }) => void;
+  onSubmit: (vars: {
+    plan_date: string | null;
+    plan_time: string | null;
+    plan_time_band: TimeBand | null;
+    is_timeless: boolean;
+    invite_open_friends?: boolean;
+  }) => void;
   allowTimeless?: boolean;
   title?: string;
 }
@@ -185,7 +192,14 @@ export function PlanComposer({
   title,
 }: Props) {
   const [sel, setSel] = useState<WhenSelection>({ date: initialDate ?? null, time: null, band: null });
+  const [includeOpenFriends, setIncludeOpenFriends] = useState(true);
   const isToday = sel.date === todayISO();
+  // Check-in scenario (spec §8): friends signalling "down for plans today" show
+  // up as a hint on the Today option. Creation flow only — not materialization.
+  const isCreation = !initialDate;
+  const { data: openFriends } = useOpenFriends(open && isCreation);
+  const openNames = (openFriends ?? []).map((u) => `@${u.handle}`);
+  const showTodayHint = isCreation && isToday && openNames.length > 0;
 
   function submit(timeless: boolean) {
     if (timeless) {
@@ -200,12 +214,32 @@ export function PlanComposer({
       toast.error('Pick a time for today.');
       return;
     }
-    onSubmit({ plan_date: sel.date, plan_time: sel.time, plan_time_band: sel.band, is_timeless: false });
+    onSubmit({
+      plan_date: sel.date, plan_time: sel.time, plan_time_band: sel.band, is_timeless: false,
+      invite_open_friends: showTodayHint && includeOpenFriends,
+    });
   }
 
   return (
     <Sheet open={open} onClose={onClose} title={title ?? (initialDate ? 'Add a time' : 'Create a plan')}>
       <WhenFields openingHours={openingHours} fixedDate={initialDate ?? undefined} onChange={setSel} />
+
+      {showTodayHint && (
+        <div className="mb-3 rounded-lg border border-emerald-100 bg-emerald-50 p-3 dark:border-emerald-900/40 dark:bg-emerald-950/30">
+          <p className="text-xs text-emerald-800 dark:text-emerald-300">
+            ⚡ {openNames.length === 1 ? `${openNames[0]} is` : `${openNames.join(', ')} are`} looking for plans today
+          </p>
+          <label className="mt-1.5 flex items-center gap-2 text-xs text-slate-600 dark:text-zinc-300">
+            <input
+              type="checkbox"
+              checked={includeOpenFriends}
+              onChange={(e) => setIncludeOpenFriends(e.target.checked)}
+              className="h-3.5 w-3.5 rounded accent-emerald-600"
+            />
+            Give them a heads-up about this plan
+          </label>
+        </div>
+      )}
 
       <div className="flex gap-2 justify-end pt-1 flex-wrap">
         {allowTimeless && !initialDate && (

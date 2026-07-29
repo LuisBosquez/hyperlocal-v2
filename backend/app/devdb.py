@@ -41,6 +41,7 @@ JSON_COLUMNS = {
     'events': {'properties'},
     'places': {'opening_hours'},
     'plan_time_proposals': {'options'},
+    'discovery_signals': {'context'},
 }
 
 # Columns stored as 0/1 in SQLite but exposed as bool.
@@ -49,6 +50,7 @@ BOOL_COLUMNS = {
     'plans': {'is_timeless'},
     'notifications': {'is_read'},
     'places': {'is_unavailable'},
+    'lists': {'is_default'},
 }
 
 
@@ -340,6 +342,7 @@ CREATE TABLE IF NOT EXISTS users (
   instagram_handle TEXT,
   twitter_handle TEXT,
   facebook_url TEXT,
+  open_to_plans_until TEXT,
   created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -368,6 +371,24 @@ CREATE TABLE IF NOT EXISTS user_places (
   created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE (user_id, place_id)
+);
+CREATE TABLE IF NOT EXISTS lists (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  visibility TEXT NOT NULL DEFAULT 'private',
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS list_places (
+  id TEXT PRIMARY KEY,
+  list_id TEXT NOT NULL,
+  place_id TEXT NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  added_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (list_id, place_id)
 );
 CREATE TABLE IF NOT EXISTS plans (
   id TEXT PRIMARY KEY,
@@ -427,10 +448,21 @@ CREATE TABLE IF NOT EXISTS invite_links (
   token TEXT UNIQUE NOT NULL,
   created_by TEXT NOT NULL,
   plan_id TEXT,
+  list_id TEXT,
+  place_id TEXT,
   created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   expires_at TEXT,
   used_by TEXT,
   used_at TEXT
+);
+CREATE TABLE IF NOT EXISTS discovery_signals (
+  id TEXT PRIMARY KEY,
+  user_id TEXT,
+  kind TEXT NOT NULL,
+  text TEXT,
+  place_id TEXT,
+  context TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE TABLE IF NOT EXISTS events (
   id TEXT PRIMARY KEY,
@@ -506,6 +538,12 @@ def seed(conn):
             (uid, handle, name, bio, private, ig, tw, fb),
         )
 
+    # bob is "down for plans today" → alice's composer shows the Today hint (spec §8)
+    conn.execute(
+        'UPDATE users SET open_to_plans_until = ? WHERE id = ?',
+        ((datetime.now(timezone.utc) + timedelta(hours=12)).isoformat(), U_BOB),
+    )
+
     for sfx, gpid, name, addr, lat, lng, cat, hours, desc in SEED_PLACES:
         conn.execute(
             'INSERT OR IGNORE INTO places (id, google_place_id, name, address, lat, lng, category, opening_hours, description, utc_offset_minutes) VALUES (?,?,?,?,?,?,?,?,?,?)',
@@ -563,6 +601,49 @@ def seed(conn):
     for sfx, uid, plid in joins:
         conn.execute('INSERT OR IGNORE INTO plan_joins (id, user_id, plan_id) VALUES (?,?,?)', (_pid(sfx), uid, plid))
 
+    # --- Lists (Flows 17–19) -----------------------------------------------------
+    # Every user gets a default "Want to Go" list (private). Alice also gets two
+    # public lists so the profile map + public-list demo has content.
+    lists = [
+        # (sfx, owner, name, description, visibility, is_default)
+        ('a0', U_ALICE, 'Want to Go', None, 'private', 1),
+        ('a1', U_ALICE, 'Capitol Hill coffee & books', 'My go-to corner of the Hill.', 'public', 0),
+        ('a2', U_ALICE, 'Rainy day spots', 'Where I hide when Seattle does its thing.', 'public', 0),
+        ('b0', U_BOB, 'Want to Go', None, 'private', 1),
+        ('b1', U_BOB, 'Breweries & beer halls', 'Pints worth the trip.', 'public', 0),
+        ('c0', U_CARLOS, 'Want to Go', None, 'private', 1),
+        ('d0', U_DANA, 'Want to Go', None, 'private', 1),
+    ]
+    for sfx, owner, name, desc, vis, is_def in lists:
+        conn.execute(
+            'INSERT OR IGNORE INTO lists (id, owner_id, name, description, visibility, is_default) VALUES (?,?,?,?,?,?)',
+            (_pid(sfx), owner, name, desc, vis, is_def),
+        )
+
+    list_places = [
+        # (sfx, list, place, position)
+        # Alice default — her saves
+        ('e0', _pid('a0'), _pid('10'), 0),  # Victrola
+        ('e1', _pid('a0'), _pid('1d'), 1),  # Alki Beach
+        # Alice "Capitol Hill coffee & books"
+        ('e2', _pid('a1'), _pid('10'), 0),  # Victrola
+        ('e3', _pid('a1'), _pid('1c'), 1),  # Elliott Bay Book Company
+        # Alice "Rainy day spots"
+        ('e4', _pid('a2'), _pid('15'), 0),  # Frye Art Museum
+        ('e5', _pid('a2'), _pid('1b'), 1),  # Seattle Central Library
+        ('e6', _pid('a2'), _pid('1c'), 2),  # Elliott Bay Book Company
+        # Bob default + public
+        ('e7', _pid('b0'), _pid('13'), 0),  # Gas Works
+        ('e8', _pid('b1'), _pid('17'), 0),  # Optimism Brewing
+        # Carlos default
+        ('e9', _pid('c0'), _pid('19'), 0),  # Tsukushinbo
+    ]
+    for sfx, lid, pid, pos in list_places:
+        conn.execute(
+            'INSERT OR IGNORE INTO list_places (id, list_id, place_id, position) VALUES (?,?,?,?)',
+            (_pid(sfx), lid, pid, pos),
+        )
+
     # alice has an unread "dana followed you" notification → Flow 13 demo
     conn.execute(
         'INSERT OR IGNORE INTO notifications (id, user_id, type, data) VALUES (?,?,?,?)',
@@ -583,6 +664,21 @@ def seed(conn):
     conn.commit()
 
 
+# Columns added after a dev.db may already exist on disk — CREATE TABLE IF NOT
+# EXISTS won't add them, so patch pre-existing databases in place.
+_DEV_MIGRATIONS = [
+    ('users', 'open_to_plans_until', 'TEXT'),
+    ('invite_links', 'place_id', 'TEXT'),
+]
+
+
+def _migrate(conn):
+    for table, col, decl in _DEV_MIGRATIONS:
+        cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+        if cols and col not in cols:
+            conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{col}" {decl}')
+
+
 def _get_conn() -> sqlite3.Connection:
     global _CONN
     if _CONN is None:
@@ -590,6 +686,7 @@ def _get_conn() -> sqlite3.Connection:
         _CONN = sqlite3.connect(DB_PATH, check_same_thread=False)
         _CONN.row_factory = sqlite3.Row
         _CONN.executescript(SCHEMA)
+        _migrate(_CONN)
         if fresh or os.environ.get('DEV_DB_RESEED') == '1':
             seed(_CONN)
         _CONN.commit()

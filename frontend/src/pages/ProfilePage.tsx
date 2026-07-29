@@ -4,26 +4,36 @@ import { useQuery } from '@tanstack/react-query';
 import api, { unwrap } from '../lib/api';
 import { queryKeys } from '../lib/queryKeys';
 import { useFollow, useUnfollow } from '../hooks/useFollows';
-import { useAuthStore } from '../store/authStore';
+import { useCreateList } from '../hooks/useLists';
 import { Spinner, EmptyState, Avatar } from '../components/ui';
 import { ShareSheet } from '../components/ui/ShareSheet';
-import type { ProfileResponse, PlaceInfo, PlanDetail } from '../types/api';
+import { ListEditor } from '../components/lists/ListEditor';
+import { ProfileMap } from '../components/profile/ProfileMap';
+import { FriendsSheet } from '../components/profile/FriendsSheet';
+import type { ProfileResponse, PlaceInfo, PlanDetail, ListSummary } from '../types/api';
 
-function PlaceList({ title, places }: { title: string; places: PlaceInfo[] }) {
-  if (places.length === 0) return null;
+function ListCards({ lists, self }: { lists: ListSummary[]; self: boolean }) {
   const navigate = useNavigate();
+  if (lists.length === 0) return null;
   return (
     <div className="mb-5">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-zinc-500 mb-2">{title}</h2>
+      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-zinc-500">Lists</h2>
       <div className="space-y-1.5">
-        {places.map((p) => (
+        {lists.map((l) => (
           <button
-            key={p.place_id}
-            onClick={() => navigate(`/places/${p.place_id}`)}
-            className="flex items-center justify-between w-full text-left px-3 py-2 rounded-lg bg-slate-50 dark:bg-zinc-900 hover:bg-slate-100 dark:hover:bg-zinc-800"
+            key={l.id}
+            onClick={() => navigate(`/lists/${l.id}`)}
+            className="flex w-full items-center justify-between rounded-lg bg-slate-50 px-3 py-2.5 text-left hover:bg-slate-100 dark:bg-zinc-900 dark:hover:bg-zinc-800"
           >
-            <span className="text-sm text-slate-800 dark:text-zinc-200">{p.name}</span>
-            {p.category && <span className="text-xs text-slate-400 capitalize">{p.category}</span>}
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium text-slate-800 dark:text-zinc-200">
+                {l.name}
+                {self && l.visibility === 'public' && <span className="ml-1.5 text-[10px] text-emerald-600 dark:text-emerald-400">public</span>}
+                {self && l.visibility === 'private' && <span className="ml-1.5 text-[10px] text-slate-400">private</span>}
+              </span>
+              {l.description && <span className="block truncate text-xs text-slate-400">{l.description}</span>}
+            </span>
+            <span className="ml-2 shrink-0 text-xs text-slate-400">{l.place_count} place{l.place_count === 1 ? '' : 's'}</span>
           </button>
         ))}
       </div>
@@ -34,9 +44,9 @@ function PlaceList({ title, places }: { title: string; places: PlaceInfo[] }) {
 export default function ProfilePage() {
   const { handle } = useParams<{ handle: string }>();
   const navigate = useNavigate();
-  const { user: me } = useAuthStore();
   const follow = useFollow();
   const unfollow = useUnfollow();
+  const createList = useCreateList();
 
   const { data: profile, isLoading } = useQuery<ProfileResponse>({
     queryKey: queryKeys.userProfile(handle ?? ''),
@@ -57,10 +67,22 @@ export default function ProfilePage() {
   });
 
   const [shareOpen, setShareOpen] = useState(false);
+  const [newListOpen, setNewListOpen] = useState(false);
+  const [friendsOpen, setFriendsOpen] = useState(false);
   async function makeProfileShareUrl() {
     const link = await unwrap<{ token: string }>(api.post('/invite-links', {}));
     return `${window.location.origin}/invite/${link.token}`;
   }
+
+  // Profile map = the places across the viewer-visible lists, deduped (Flow 20).
+  // Mutual viewers also get the full saved-places set mixed in.
+  const lists = profile?.lists ?? [];
+  const mapPlaces: PlaceInfo[] = (() => {
+    const byId = new Map<string, PlaceInfo>();
+    for (const l of lists) for (const p of l.places ?? []) byId.set(p.place_id, p);
+    for (const p of places ?? []) byId.set(p.place_id, p);
+    return [...byId.values()];
+  })();
 
   if (isLoading) {
     return (
@@ -144,7 +166,7 @@ export default function ProfilePage() {
               </div>
             )}
             {isSelf && (
-              <div className="mb-6 flex gap-2">
+              <div className="mb-6 flex flex-wrap gap-2">
                 <button
                   onClick={() => navigate('/settings')}
                   className="px-4 py-2 rounded-full text-sm bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300"
@@ -152,24 +174,33 @@ export default function ProfilePage() {
                   Edit profile
                 </button>
                 <button
+                  onClick={() => setFriendsOpen(true)}
+                  className="px-4 py-2 rounded-full text-sm bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300"
+                >
+                  Friends
+                </button>
+                <button
                   onClick={() => setShareOpen(true)}
-                  className="px-4 py-2 rounded-full text-sm bg-slate-900 dark:bg-zinc-100 text-white dark:text-zinc-900"
+                  className="px-4 py-2 rounded-full text-sm bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300"
                 >
                   Share profile
+                </button>
+                <button
+                  onClick={() => setNewListOpen(true)}
+                  className="px-4 py-2 rounded-full text-sm bg-slate-900 dark:bg-zinc-100 text-white dark:text-zinc-900"
+                >
+                  ＋ New list
                 </button>
               </div>
             )}
 
-            {/* Tier-specific content */}
-            {(profile.tier === 'follower' || profile.tier === 'self') && (
-              <>
-                <PlaceList title="Favorite places" places={profile.favorite_places ?? []} />
-                <PlaceList title="Want to go" places={profile.want_to_go ?? []} />
-                {(profile.favorite_places?.length ?? 0) === 0 && (profile.want_to_go?.length ?? 0) === 0 && (
-                  <p className="text-sm text-slate-400 dark:text-zinc-500">No public places yet.</p>
-                )}
-              </>
-            )}
+            {/* Profile map (Flow 20) — the places across visible lists */}
+            <div className="mb-5">
+              <ProfileMap places={mapPlaces} />
+            </div>
+
+            {/* Lists (replaces the old Favorite/Want-to-go sections) */}
+            <ListCards lists={lists} self={isSelf} />
 
             {isMutual && (
               <>
@@ -190,15 +221,11 @@ export default function ProfilePage() {
                     </div>
                   </div>
                 )}
-                <PlaceList title="Saved places" places={places ?? []} />
-                {(!places || places.length === 0) && (!plans || plans.length === 0) && (
-                  <p className="text-sm text-slate-400 dark:text-zinc-500">Nothing saved yet.</p>
-                )}
               </>
             )}
 
-            {profile.tier === 'none' && (
-              <p className="text-sm text-slate-400 dark:text-zinc-500">Follow @{profile.handle} to see their taste and intent.</p>
+            {profile.tier === 'none' && lists.length === 0 && (
+              <p className="text-sm text-slate-400 dark:text-zinc-500">No public lists yet. Follow @{profile.handle} to see more.</p>
             )}
           </>
         )}
@@ -210,6 +237,21 @@ export default function ProfilePage() {
         getUrl={makeProfileShareUrl}
         title="Share your profile"
         subtitle="Send this to a friend — they’ll follow you when they sign up."
+      />
+      <FriendsSheet open={friendsOpen} onClose={() => setFriendsOpen(false)} />
+      <ListEditor
+        open={newListOpen}
+        onClose={() => setNewListOpen(false)}
+        title="New list"
+        submitting={createList.isPending}
+        onSubmit={(draft) =>
+          createList.mutate(draft, {
+            onSuccess: (created) => {
+              setNewListOpen(false);
+              navigate(`/lists/${created.id}`);
+            },
+          })
+        }
       />
     </div>
   );

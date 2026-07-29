@@ -173,6 +173,10 @@ export default function PlanDetailPage() {
               >
                 {viewer.is_interested ? 'Interested ✓' : 'Interested'}
               </button>
+              {/* Sharing powers collaboration (spec §10) — not just for organizers. */}
+              <button onClick={() => setShareOpen(true)} className="px-4 py-2 rounded-full text-sm bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300">
+                Share
+              </button>
             </>
           )}
         </div>

@@ -22,9 +22,6 @@ export function PlaceCard({ card }: { card: PlaceCardData }) {
             {card.source === 'friend' && (
               <span className="shrink-0 text-[10px] uppercase tracking-wide text-indigo-500 dark:text-indigo-400">friend</span>
             )}
-            {card.source === 'contextual' && (
-              <span className="shrink-0 text-[10px] uppercase tracking-wide text-amber-500">suggested</span>
-            )}
           </div>
           {card.category && <p className="text-xs text-slate-400 dark:text-zinc-500 capitalize">{card.category}</p>}
           {card.saved_by_handle && (

@@ -235,6 +235,51 @@ def distance_m(lat1, lng1, lat2, lng2) -> int:
     return int(2 * r * math.asin(math.sqrt(a)))
 
 
+# Default cap for area-scoped discovery (MVP-1 "show 6–9 nearby", clamped ≤ 9).
+PLACE_CAP_DEFAULT = 9
+PLACE_CAP_MAX = 9
+
+
+def parse_bbox(s: str | None):
+    """'minLng,minLat,maxLng,maxLat' -> [floats] or None (Area scoping, Flow 14)."""
+    if not s:
+        return None
+    try:
+        vals = [float(x) for x in s.split(',')]
+    except ValueError:
+        return None
+    return vals if len(vals) == 4 else None
+
+
+def in_bbox(lat, lng, bbox) -> bool:
+    if not bbox:
+        return True
+    min_lng, min_lat, max_lng, max_lat = bbox
+    return min_lat <= lat <= max_lat and min_lng <= lng <= max_lng
+
+
+def clamp_cap(raw: int | None) -> int:
+    if not raw or raw < 1:
+        return PLACE_CAP_DEFAULT
+    return min(raw, PLACE_CAP_MAX)
+
+
+# --- open-to-plans signal (spec §8, MD-5) -------------------------------------------
+
+def open_friend_ids(user_id: str) -> list[str]:
+    """Mutual friends with an active "down for plans today" signal."""
+    ids = mutual_friend_ids(user_id)
+    if not ids:
+        return []
+    sb = get_supabase()
+    now = datetime.now(timezone.utc).isoformat()
+    rows = (
+        sb.table('users').select('id, open_to_plans_until')
+        .in_('id', ids).gt('open_to_plans_until', now).execute().data or []
+    )
+    return [r['id'] for r in rows]
+
+
 # --- notifications ----------------------------------------------------------------
 
 def notify(user_id: str, ntype: str, data: dict, dedupe_plan_id: str | None = None) -> bool:

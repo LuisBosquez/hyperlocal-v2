@@ -5,7 +5,7 @@ def register_blueprints(app: Flask) -> None:
     import os
     from .auth import auth_bp
     from .users import users_bp
-    from .places import places_bp, user_places_bp
+    from .places import places_bp, user_places_bp, geo_bp
     from .plans import plans_bp
     from .social import social_bp
     from .interests import interests_bp
@@ -13,11 +13,13 @@ def register_blueprints(app: Flask) -> None:
     from .invite_links import invite_links_bp
     from .feed import feed_bp
     from .analytics import analytics_bp
+    from .lists import lists_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(users_bp)
     app.register_blueprint(places_bp)
     app.register_blueprint(user_places_bp)
+    app.register_blueprint(geo_bp)
     app.register_blueprint(plans_bp)
     app.register_blueprint(social_bp)
     app.register_blueprint(interests_bp)
@@ -25,6 +27,7 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(invite_links_bp)
     app.register_blueprint(feed_bp)
     app.register_blueprint(analytics_bp)
+    app.register_blueprint(lists_bp)
 
     if os.environ.get("FLASK_DEBUG") or os.environ.get("FLASK_ENV") == "development":
         from .dev import dev_bp

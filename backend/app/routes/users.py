@@ -1,15 +1,17 @@
 import re
-from collections import Counter
-from datetime import date
+from datetime import date, datetime, time, timezone
 
 from flask import Blueprint, request, g
 
 from ..middleware import require_auth, optional_auth
 from ..extensions import get_supabase
 from ..errors import ok, err
+from ..telemetry import track
 from ..domain import (
     HANDLE_RE, relationship, mutual_friend_ids, users_by_ids, public_user, plan_state,
+    open_friend_ids,
 )
+from .lists import visible_lists
 
 users_bp = Blueprint('users', __name__, url_prefix='/api/v1/users')
 
@@ -86,34 +88,47 @@ def get_friends():
     return ok([public_user(u) for u in users.values()])
 
 
-def _favorite_places(sb, owner_id: str, today: str) -> list[dict]:
-    """Top 5 places from attendance history: past confirmed plans the owner
-    organized or joined, aggregated at the place level (spec: Profile Page)."""
-    organized = sb.table('plans').select('*').eq('organizer_id', owner_id).eq('status', 'active').execute().data or []
-    joined_rows = sb.table('plan_joins').select('plan_id').eq('user_id', owner_id).execute().data or []
-    joined_ids = [r['plan_id'] for r in joined_rows]
-    joined = sb.table('plans').select('*').in_('id', joined_ids).eq('status', 'active').execute().data if joined_ids else []
-    past = [
-        p for p in organized + (joined or [])
-        if not p['is_timeless'] and p.get('plan_time') and p.get('plan_date') and p['plan_date'] < today
-    ]
-    counts = Counter(p['place_id'] for p in past)
-    top = [pid for pid, _ in counts.most_common(5)]
-    places = sb.table('places').select('*').in_('id', top).execute().data if top else []
-    by_id = {p['id']: p for p in (places or [])}
-    return [_place_info(by_id[pid]) for pid in top if pid in by_id]
+# --- open-to-plans signal (spec §8, MD-5) --------------------------------------
+
+def _signal_state(row: dict | None) -> dict:
+    until = (row or {}).get('open_to_plans_until')
+    active = bool(until) and until > datetime.now(timezone.utc).isoformat()
+    return {'open_to_plans': active, 'until': until if active else None}
 
 
-def _want_to_go(sb, owner_id: str) -> list[dict]:
-    """Places the owner has an active timeless plan for — place info only, no dates."""
-    plans = (
-        sb.table('plans').select('*')
-        .eq('organizer_id', owner_id).eq('status', 'active').eq('is_timeless', True)
-        .execute().data or []
+@users_bp.route('/me/signal', methods=['GET'])
+@require_auth
+def get_signal():
+    sb = get_supabase()
+    row = sb.table('users').select('*').eq('id', g.user_id).maybe_single().execute()
+    return ok(_signal_state(row.data if row else None))
+
+
+@users_bp.route('/me/signal', methods=['PUT'])
+@require_auth
+def set_signal():
+    """Flip "I'm down for plans today". Expires at end of (UTC) day — MD-5: no
+    ambient presence beyond today."""
+    body = request.get_json(silent=True) or {}
+    on = bool(body.get('open_to_plans'))
+    until = (
+        datetime.combine(datetime.now(timezone.utc).date(), time(23, 59, 59), tzinfo=timezone.utc).isoformat()
+        if on else None
     )
-    pids = list({p['place_id'] for p in plans})
-    places = sb.table('places').select('*').in_('id', pids).execute().data if pids else []
-    return [_place_info(p) for p in (places or [])]
+    sb = get_supabase()
+    sb.table('users').update({'open_to_plans_until': until}).eq('id', g.user_id).execute()
+    track('open_to_plans_set', g.user_id, {'on': on})
+    return ok({'open_to_plans': on, 'until': until})
+
+
+@users_bp.route('/me/friends/open-today', methods=['GET'])
+@require_auth
+def friends_open_today():
+    """Mutual friends currently signalling they're down for plans — powers the
+    composer's Today hint (spec §8)."""
+    ids = open_friend_ids(g.user_id)
+    users = users_by_ids(ids)
+    return ok([public_user(u) for u in users.values()])
 
 
 def _place_info(p: dict) -> dict:
@@ -143,19 +158,8 @@ def get_user(handle: str):
         'relationship': rel,
     }
 
-    if rel['is_self']:
-        today = str(date.today())
-        return ok({
-            **base, 'tier': 'self',
-            'instagram_handle': owner.get('instagram_handle'),
-            'twitter_handle': owner.get('twitter_handle'),
-            'facebook_url': owner.get('facebook_url'),
-            'favorite_places': _favorite_places(sb, owner['id'], today),
-            'want_to_go': _want_to_go(sb, owner['id']),
-        })
-
     # Private profile: hidden from non-followers entirely; follow disabled (Flow 11).
-    if owner.get('is_private') and not rel['i_follow']:
+    if owner.get('is_private') and not (rel['is_self'] or rel['i_follow']):
         return ok({
             'handle': owner['handle'], 'display_name': owner['display_name'],
             'is_private': True, 'tier': 'private', 'relationship': rel,
@@ -166,19 +170,20 @@ def get_user(handle: str):
         'twitter_handle': owner.get('twitter_handle'),
         'facebook_url': owner.get('facebook_url'),
     }
+    # User-curated Lists replace the old auto-derived Favorite/Want-to-go sections.
+    # visible_lists returns public-only for non-mutual viewers, all for self/mutual.
+    lists = visible_lists(sb, owner['id'], g.user_id)
+
+    if rel['is_self']:
+        return ok({**base, **socials, 'tier': 'self', 'lists': lists})
 
     if rel['is_mutual']:
-        return ok({**base, **socials, 'tier': 'mutual'})
+        return ok({**base, **socials, 'tier': 'mutual', 'lists': lists})
 
     if rel['i_follow']:
-        today = str(date.today())
-        return ok({
-            **base, **socials, 'tier': 'follower',
-            'favorite_places': _favorite_places(sb, owner['id'], today),
-            'want_to_go': _want_to_go(sb, owner['id']),
-        })
+        return ok({**base, **socials, 'tier': 'follower', 'lists': lists})
 
-    return ok({**base, 'tier': 'none'})
+    return ok({**base, 'tier': 'none', 'lists': lists})
 
 
 @users_bp.route('/<handle>/places', methods=['GET'])

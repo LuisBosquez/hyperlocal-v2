@@ -7,3 +7,10 @@
     @apply bg-white text-slate-900 dark:bg-zinc-950 dark:text-zinc-100;
   }
 }
+
+/* Plan-pin card on the map (spec §6) — soften Mapbox's default popup chrome. */
+.hl-plan-popup .mapboxgl-popup-content {
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+}

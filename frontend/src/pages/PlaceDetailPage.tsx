@@ -4,8 +4,10 @@ import { usePlaceDetail, useSavePlace, useUnsavePlace, useUpdateNote } from '../
 import { useCreatePlan } from '../hooks/usePlans';
 import { OverlayScreen } from '../components/layout/OverlayScreen';
 import { PlanComposer } from '../components/plan/PlanComposer';
+import { AddToListSheet } from '../components/lists/AddToListSheet';
+import { ShareSheet } from '../components/ui/ShareSheet';
 import { Spinner, EmptyState, toast } from '../components/ui';
-import { apiError } from '../lib/api';
+import api, { apiError, unwrap } from '../lib/api';
 
 export default function PlaceDetailPage() {
   const { placeId } = useParams<{ placeId: string }>();
@@ -19,6 +21,8 @@ export default function PlaceDetailPage() {
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState('');
   const [composerOpen, setComposerOpen] = useState(false);
+  const [listsOpen, setListsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   const saved = place?.viewer?.is_saved ?? false;
 
@@ -67,7 +71,17 @@ export default function PlaceDetailPage() {
     }
   }
 
-  function submitPlan(vars: { plan_date: string | null; plan_time: string | null; is_timeless: boolean }) {
+  async function makeShareUrl() {
+    const link = await unwrap<{ token: string }>(api.post('/invite-links', { place_id: placeId }));
+    return `${window.location.origin}/invite/${link.token}`;
+  }
+
+  function submitPlan(vars: {
+    plan_date: string | null;
+    plan_time: string | null;
+    is_timeless: boolean;
+    invite_open_friends?: boolean;
+  }) {
     if (!placeId) return;
     createPlan.mutate(
       { place_id: placeId, ...vars },
@@ -117,11 +131,23 @@ export default function PlaceDetailPage() {
             {saved ? '★ Saved' : '☆ Save'}
           </button>
           <button
+            onClick={() => setListsOpen(true)}
+            className="px-4 py-2 rounded-full text-sm font-medium bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300"
+          >
+            ＋ List
+          </button>
+          <button
             onClick={() => (place.viewer?.active_plan_id ? navigate(`/plans/${place.viewer.active_plan_id}`) : setComposerOpen(true))}
             disabled={place.is_unavailable}
             className="px-4 py-2 rounded-full text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
           >
             {place.viewer?.active_plan_id ? 'View your plan' : 'Create a plan'}
+          </button>
+          <button
+            onClick={() => setShareOpen(true)}
+            className="px-4 py-2 rounded-full text-sm font-medium bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300"
+          >
+            Share
           </button>
         </div>
 
@@ -154,6 +180,19 @@ export default function PlaceDetailPage() {
           )}
         </div>
       </div>
+
+      {placeId && (
+        <AddToListSheet open={listsOpen} onClose={() => setListsOpen(false)} placeId={placeId} />
+      )}
+
+      <ShareSheet
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        getUrl={makeShareUrl}
+        title="Share this place"
+        subtitle={`Send ${place.name} to a friend.`}
+      />
+
 
       <PlanComposer
         open={composerOpen}

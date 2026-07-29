@@ -4,6 +4,7 @@ from ..middleware import require_auth
 from ..extensions import get_supabase
 from ..errors import ok, err
 from ..telemetry import track
+from ..signals import record_signal
 from ..devdb import DuplicateError
 from ..domain import relationship, users_by_ids, public_user, notify
 
@@ -48,6 +49,8 @@ def join_plan(plan_id: str):
         joiner = users_by_ids([g.user_id]).get(g.user_id) or {}
         place_row = sb.table('places').select('*').eq('id', plan['place_id']).maybe_single().execute()
         place = place_row.data if place_row else None
+        record_signal('plan_join', g.user_id, place_id=plan['place_id'],
+                      context={'category': (place or {}).get('category')})
         notify(plan['organizer_id'], 'friend_joined_plan', {
             'plan_id': plan_id,
             'joiner_handle': joiner.get('handle'),

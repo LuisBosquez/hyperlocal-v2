@@ -1,8 +1,37 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import api, { unwrap, apiError } from '../lib/api';
 import { queryKeys } from '../lib/queryKeys';
+import { useMapStore } from '../store/mapStore';
 import { toast } from '../components/ui';
-import type { PlanDetail, TimeBand, TimeProposal, TimeProposalOption } from '../types/api';
+import type { PlanDetail, PlanPin, TimeBand, TimeProposal, TimeProposalOption } from '../types/api';
+
+/** Plan pins for the map (spec §6, MD-4) — scoped like place pins, so panning
+ * never refires; only "Search this area" / locate-me / city switch do. */
+export function usePlanPins() {
+  const [lng, lat] = useMapStore((s) => s.scopedCenter);
+  const scopedBbox = useMapStore((s) => s.scopedBbox);
+  const bbox = scopedBbox ? scopedBbox.join(',') : undefined;
+  return useQuery<PlanPin[]>({
+    queryKey: queryKeys.planPins(lat, lng, bbox),
+    queryFn: () => unwrap(api.get('/plans/map', { params: { lat, lng, bbox } })),
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Join straight from a plan-pin card on the map (spec §6). */
+export function useJoinFromMap() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (planId: string) => api.post(`/plans/${planId}/joins`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.planPinsAll() });
+      qc.invalidateQueries({ queryKey: queryKeys.panelAll() });
+      toast.success("You're in. Propose a time from the plan if it needs one.");
+    },
+    onError: (e) => toast.error(apiError(e).message ?? "Couldn't join."),
+  });
+}
 
 export function usePlanDetail(planId: string) {
   return useQuery<PlanDetail>({
@@ -22,10 +51,12 @@ export function useCreatePlan() {
       plan_time?: string | null;
       plan_time_band?: TimeBand | null;
       is_timeless?: boolean;
+      invite_open_friends?: boolean;
     }) => unwrap<PlanDetail>(api.post('/plans', vars)),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.panelAll() });
       qc.invalidateQueries({ queryKey: queryKeys.mapPins() });
+      qc.invalidateQueries({ queryKey: queryKeys.planPinsAll() });
     },
   });
 }

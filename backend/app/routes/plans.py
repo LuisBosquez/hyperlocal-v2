@@ -10,7 +10,8 @@ from ..devdb import DuplicateError
 from ..domain import (
     relationship, users_by_ids, public_user, plan_state, time_granularity,
     is_past, is_unconfirmed, validate_plan_datetime, validate_proposal_option,
-    notify, plan_audience,
+    notify, plan_audience, mutual_friend_ids, open_friend_ids, place_now,
+    parse_bbox, in_bbox, distance_m,
 )
 
 PROPOSAL_DEFAULT_TTL_DAYS = 2   # M-D17: proposer-settable, defaults to 48h
@@ -221,6 +222,24 @@ def create_plan():
         ).execute()
 
     track('plan_created', g.user_id, {'plan_id': plan['id'], 'place_id': place_id, 'state': plan_state(plan)})
+
+    # Check-in scenario (spec §8): a Today plan can loop in friends who flagged
+    # they're down for plans — organizer opted in via the composer hint.
+    if body.get('invite_open_friends') and plan_date == str(place_now(place).date()):
+        me = users_by_ids([g.user_id]).get(g.user_id) or {}
+        open_ids = open_friend_ids(g.user_id)
+        for uid in open_ids:
+            notify(uid, 'friend_open_invite', {
+                'plan_id': plan['id'],
+                'organizer_handle': me.get('handle'),
+                'place_name': place.get('name'),
+                'plan_date': plan_date,
+                'plan_time': plan_time,
+                'plan_time_band': plan_time_band,
+            })
+        if open_ids:
+            track('open_friends_invited', g.user_id, {'plan_id': plan['id'], 'count': len(open_ids)})
+
     return ok(serialize_plan(plan, g.user_id, place), 201)
 
 
@@ -492,6 +511,84 @@ def retract_proposal(plan_id: str, proposal_id: str):
         sb.table('plan_time_proposals').delete().eq('id', proposal_id).execute()
         track('time_proposal_retracted', g.user_id, {'plan_id': plan_id})
     return ok(None)
+
+
+PLAN_PIN_CAP = 30  # plan pins are the priority layer (MD-4) — roomier cap than places
+
+
+@plans_bp.route('/map', methods=['GET'])
+@require_auth
+def plan_pins():
+    """Plan pins for the map (spec §6, MD-4): my active plans + mutual friends'
+    active, upcoming plans — area-scoped, louder than place pins on the client."""
+    bbox = parse_bbox(request.args.get('bbox'))
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+
+    sb = get_supabase()
+    rows: list[tuple[dict, str]] = []
+    mine = sb.table('plans').select('*').eq('organizer_id', g.user_id).eq('status', 'active').execute().data or []
+    rows += [(p, 'organizer') for p in mine]
+
+    joined_rows = sb.table('plan_joins').select('plan_id').eq('user_id', g.user_id).execute().data or []
+    joined_ids = {r['plan_id'] for r in joined_rows}
+
+    friend_ids = mutual_friend_ids(g.user_id)
+    if friend_ids:
+        friend_plans = (
+            sb.table('plans').select('*')
+            .in_('organizer_id', friend_ids).eq('status', 'active').execute().data or []
+        )
+        rows += [(p, 'joiner' if p['id'] in joined_ids else 'friend') for p in friend_plans]
+
+    pids = list({p['place_id'] for p, _ in rows})
+    places = {p['id']: p for p in (sb.table('places').select('*').in_('id', pids).execute().data or [])} if pids else {}
+    organizers = users_by_ids([p['organizer_id'] for p, _ in rows])
+
+    plan_ids = [p['id'] for p, _ in rows]
+    joins_all = sb.table('plan_joins').select('plan_id, user_id').in_('plan_id', plan_ids).execute().data if plan_ids else []
+    ints_all = sb.table('plan_interests').select('plan_id, user_id').in_('plan_id', plan_ids).execute().data if plan_ids else []
+    joins_by_plan: dict[str, set] = {}
+    for r in (joins_all or []):
+        joins_by_plan.setdefault(r['plan_id'], set()).add(r['user_id'])
+    ints_by_plan: dict[str, set] = {}
+    for r in (ints_all or []):
+        ints_by_plan.setdefault(r['plan_id'], set()).add(r['user_id'])
+
+    pins = []
+    for plan, role in rows:
+        place = places.get(plan['place_id'])
+        if not place or is_past(plan, place):
+            continue
+        if not in_bbox(place['lat'], place['lng'], bbox):
+            continue
+        join_ids = joins_by_plan.get(plan['id'], set())
+        interest_ids = ints_by_plan.get(plan['id'], set())
+        organizer = organizers.get(plan['organizer_id']) or {}
+        pins.append({
+            'plan_id': plan['id'],
+            'place_id': plan['place_id'],
+            'place_name': place['name'],
+            'category': place.get('category'),
+            'lat': place['lat'],
+            'lng': place['lng'],
+            'plan_date': plan.get('plan_date'),
+            'plan_time': plan.get('plan_time'),
+            'plan_time_band': plan.get('plan_time_band'),
+            'state': plan_state(plan),
+            'role': role,
+            'organizer_handle': organizer.get('handle'),
+            'organizer_avatar_url': organizer.get('avatar_url'),
+            'join_count': len(join_ids),
+            'interest_count': len(interest_ids),
+            'viewer_has_joined': g.user_id in join_ids,
+            'viewer_is_interested': g.user_id in interest_ids,
+            'distance_meters': distance_m(lat, lng, place['lat'], place['lng'])
+            if lat is not None and lng is not None else None,
+        })
+    # Soonest-first; timeless last — same priority order the Panel uses.
+    pins.sort(key=lambda c: (c['plan_date'] or '9999-12-31', c['plan_time'] or '99:99'))
+    return ok(pins[:PLAN_PIN_CAP])
 
 
 @plans_bp.route('/mine', methods=['GET'])

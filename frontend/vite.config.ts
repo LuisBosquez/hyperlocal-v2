@@ -7,7 +7,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:5001',
+        // Overridable so a second dev stack can run side-by-side.
+        target: process.env.API_PROXY_TARGET ?? 'http://localhost:5001',
         changeOrigin: true,
       },
     },

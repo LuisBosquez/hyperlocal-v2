@@ -278,17 +278,14 @@ class TestProfileTiers:
         plans = client.get('/api/v1/users/bob/plans', headers=as_alice)
         assert plans.status_code == 200
 
-    def test_one_way_follower_sees_curated_lists_only(self, client, as_alice):
+    def test_one_way_follower_sees_public_lists_only(self, client, as_alice):
         r = client.get('/api/v1/users/carlos', headers=as_alice)
         data = r.json['data']
         assert data['tier'] == 'follower'
-        assert 'favorite_places' in data and 'want_to_go' in data
-        # carlos's past izakaya plans make Tsukushinbo a favorite
-        fav_names = {p['name'] for p in data['favorite_places']}
-        assert 'Tsukushinbo' in fav_names
-        wtg_names = {p['name'] for p in data['want_to_go']}
-        assert 'Tsukushinbo' in wtg_names
-        # but full lists are forbidden
+        # Lists replaced the old favorite/want-to-go sections: a non-mutual
+        # viewer sees public lists only (carlos only has his private default).
+        assert all(l['visibility'] == 'public' for l in data['lists'])
+        # but the full saved-places / plans sets are forbidden
         assert client.get('/api/v1/users/carlos/places', headers=as_alice).status_code == 403
         assert client.get('/api/v1/users/carlos/plans', headers=as_alice).status_code == 403
 
@@ -620,3 +617,98 @@ class TestCoarseTime:
         # Optimism opens 16:00 → 'morning' (06:00–12:00) has no open slot
         r = client.post('/api/v1/plans', json={'place_id': PLACE_OPTIMISM, 'plan_date': NEXT_WEEK, 'plan_time_band': 'morning'}, headers=as_alice)
         assert r.status_code == 422 and r.json['error']['code'] == 'OUTSIDE_OPENING_HOURS'
+
+
+# --- MVP Map Discovery & Social Layer (pm/specs/mvp-map-discovery.md) ------------------------------
+
+class TestMapDiscovery:
+    def test_search_returns_category_groups(self, client, as_alice):
+        r = client.get('/api/v1/places/search?q=coffee%20shops&lat=47.6131&lng=-122.3251', headers=as_alice)
+        groups = r.json['data']['groups']
+        assert groups and groups[0]['category'] == 'coffee'
+        assert 1 <= len(groups[0]['places']) <= 5
+        # nearest-first when a location is given
+        dists = [p['distance_meters'] for p in groups[0]['places']]
+        assert dists == sorted(dists)
+
+    def test_search_nl_query_maps_to_category(self, client, as_alice):
+        r = client.get('/api/v1/places/search?q=somewhere%20for%20a%20beer', headers=as_alice)
+        cats = [g['category'] for g in r.json['data']['groups']]
+        assert 'bar' in cats
+
+    def test_city_forward_geocode(self, client, as_alice):
+        r = client.get('/api/v1/geo/forward?q=port', headers=as_alice)
+        results = r.json['data']['results']
+        assert any(c['name'] == 'Portland' for c in results)
+        assert all(len(c['bbox']) == 4 for c in results)
+        # short queries stay quiet
+        assert client.get('/api/v1/geo/forward?q=po', headers=as_alice).json['data']['results'] == []
+
+    def test_plan_pins_mutual_visibility(self, client, as_alice):
+        pins = client.get('/api/v1/plans/map', headers=as_alice).json['data']
+        handles = {p['organizer_handle'] for p in pins}
+        assert 'bob' in handles          # mutual friend's plans show
+        assert 'carlos' not in handles   # one-way follow: invisible
+        joined = [p for p in pins if p['viewer_has_joined']]
+        assert any(p['role'] == 'joiner' for p in joined)
+
+    def test_plan_pins_area_scoped(self, client, as_alice):
+        # a bbox far from Seattle excludes everything
+        pins = client.get('/api/v1/plans/map?bbox=10,10,11,11', headers=as_alice).json['data']
+        assert pins == []
+
+    def test_open_to_plans_roundtrip(self, client, as_alice):
+        # bob is seeded as open today → alice sees him
+        r = client.get('/api/v1/users/me/friends/open-today', headers=as_alice)
+        assert any(u['handle'] == 'bob' for u in r.json['data'])
+        # alice flips hers on and off
+        r = client.put('/api/v1/users/me/signal', json={'open_to_plans': True}, headers=as_alice)
+        assert r.json['data']['open_to_plans'] is True
+        r = client.get('/api/v1/users/me/signal', headers=as_alice)
+        assert r.json['data']['open_to_plans'] is True
+        r = client.put('/api/v1/users/me/signal', json={'open_to_plans': False}, headers=as_alice)
+        assert r.json['data']['open_to_plans'] is False
+
+    def test_today_plan_invites_open_friends(self, client, as_alice, as_bob):
+        from datetime import datetime, timedelta, timezone
+        place_local = datetime.now(timezone.utc).astimezone(timezone(timedelta(minutes=-420)))
+        if place_local.hour >= 23 and place_local.minute >= 50:
+            import pytest
+            pytest.skip('too close to place-local midnight for a Today plan')
+        plan_time = (place_local + timedelta(minutes=10)).strftime('%H:%M')
+        today_local = str(place_local.date())
+        # Gas Works has no opening hours → any future time passes validation
+        r = client.post('/api/v1/plans', json={
+            'place_id': PLACE_GASWORKS, 'plan_date': today_local, 'plan_time': plan_time,
+            'invite_open_friends': True,
+        }, headers=as_alice)
+        assert r.status_code == 201
+        notifs = client.get('/api/v1/notifications', headers=as_bob).json['data']
+        assert any(n['type'] == 'friend_open_invite' and n['data'].get('organizer_handle') == 'alice'
+                   for n in notifs)
+
+    def test_place_share_link_roundtrip(self, client, as_alice):
+        r = client.post('/api/v1/invite-links', json={'place_id': PLACE_VICTROLA}, headers=as_alice)
+        assert r.status_code == 201
+        token = r.json['data']['token']
+        resolved = client.get(f'/api/v1/invite-links/{token}').json['data']
+        assert resolved['place']['place_id'] == PLACE_VICTROLA
+        assert resolved['plan_id'] is None
+
+    def test_list_share_link_resolves_list(self, client, as_alice):
+        lists = client.get('/api/v1/users/me/lists', headers=as_alice).json['data']['items']
+        public = next(l for l in lists if l['visibility'] == 'public')
+        token = client.post(f"/api/v1/lists/{public['id']}/share", headers=as_alice).json['data']['token']
+        resolved = client.get(f'/api/v1/invite-links/{token}').json['data']
+        assert resolved['list']['list_id'] == public['id']
+
+    def test_signals_pipeline_collects(self, client, as_alice, app):
+        client.get('/api/v1/places/search?q=cozy%20coffee&lat=47.61&lng=-122.32', headers=as_alice)
+        client.post('/api/v1/lists', json={'name': 'Date night ideas', 'visibility': 'private'}, headers=as_alice)
+        from app.extensions import get_supabase
+        with app.app_context():
+            rows = get_supabase().table('discovery_signals').select('*').execute().data
+        kinds = {r['kind'] for r in rows}
+        assert 'search_query' in kinds and 'list_name' in kinds
+        named = [r for r in rows if r['kind'] == 'list_name']
+        assert any(r['text'] == 'Date night ideas' for r in named)

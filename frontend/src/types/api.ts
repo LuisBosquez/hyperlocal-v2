@@ -39,6 +39,12 @@ export interface PlaceInfo {
   photo_url?: string | null;
 }
 
+export interface SearchMatch {
+  kind: 'name' | 'category' | 'note';
+  note_source: 'own' | 'friend' | null;
+  note_handle: string | null;
+}
+
 export interface Place extends PlaceInfo {
   google_place_id?: string;
   description?: string | null;
@@ -50,11 +56,90 @@ export interface Place extends PlaceInfo {
   saved_by_handle?: string | null;
   note?: string | null;
   saved_at?: string | null;
+  match?: SearchMatch; // notes-enriched search provenance (Flow 16)
   viewer?: {
     is_saved: boolean;
     note: string | null;
     active_plan_id?: string | null;
   };
+}
+
+// --- Map discovery (pm/specs/mvp-map-discovery.md) ----------------------------
+
+/** NL/category search: a proximity cluster of up to 5 places (spec §3, MD-3). */
+export interface CategoryGroup {
+  kind: 'category';
+  category: string;
+  label: string;
+  places: Place[];
+}
+
+export interface PlaceSearchResponse {
+  results: Place[];
+  groups: CategoryGroup[];
+  degraded: boolean;
+}
+
+/** City match for the change-location search mode (spec §4). */
+export interface CityResult {
+  name: string;
+  region: string;
+  lat: number;
+  lng: number;
+  bbox: [number, number, number, number];
+}
+
+/** A plan rendered as a first-class map marker (spec §6, MD-4). */
+export interface PlanPin {
+  plan_id: string;
+  place_id: string;
+  place_name: string;
+  category: string | null;
+  lat: number;
+  lng: number;
+  plan_date: string | null;
+  plan_time: string | null;
+  plan_time_band: TimeBand | null;
+  state: PlanState;
+  role: 'organizer' | 'joiner' | 'friend';
+  organizer_handle: string | null;
+  organizer_avatar_url: string | null;
+  join_count: number;
+  interest_count: number;
+  viewer_has_joined: boolean;
+  viewer_is_interested: boolean;
+  distance_meters: number | null;
+}
+
+/** "I'm down for plans today" (spec §8, MD-5). */
+export interface OpenSignal {
+  open_to_plans: boolean;
+  until: string | null;
+}
+
+// --- Lists (Flows 17–20) -----------------------------------------------------
+export interface ListSummary {
+  id: string;
+  name: string;
+  description?: string | null;
+  visibility: 'public' | 'private';
+  is_default: boolean;
+  place_count: number;
+  updated_at?: string;
+  contains_place?: boolean; // present on GET /users/me/lists?place_id=
+  places?: PlaceInfo[]; // present on profile-embedded lists
+}
+
+export interface ListDetail {
+  id: string;
+  name: string;
+  description: string | null;
+  visibility: 'public' | 'private';
+  is_default: boolean;
+  place_count: number;
+  owner: PublicUser | null;
+  is_owner: boolean;
+  places: (PlaceInfo & { position?: number })[];
 }
 
 export interface OpeningPeriod {
@@ -178,14 +263,14 @@ export interface ProfileResponse {
   instagram_handle?: string | null;
   twitter_handle?: string | null;
   facebook_url?: string | null;
-  favorite_places?: PlaceInfo[];
-  want_to_go?: PlaceInfo[];
+  lists?: ListSummary[];
 }
 
 export interface InviteResolved {
   token: string;
   creator: PublicUser | null;
   place: { name: string; category: string | null; place_id: string } | null;
+  list: { list_id: string; name: string } | null;
   plan_id: string | null;
   expired: boolean;
 }

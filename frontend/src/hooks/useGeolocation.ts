@@ -8,7 +8,7 @@ const LAST_VIEWPORT = 'hl_last_center';
  * (tech/08 P4 / J0.3): denied/unavailable → last viewport → default city.
  */
 export function useGeolocation() {
-  const { setViewport, setLocationMode } = useMapStore();
+  const { setViewport, setScopedArea, setUserLocation, setLocationMode } = useMapStore();
   const ran = useRef(false);
 
   useEffect(() => {
@@ -20,6 +20,7 @@ export function useGeolocation() {
       try {
         const c = JSON.parse(stored) as [number, number];
         setViewport({ center: c });
+        setScopedArea(c, null); // initial discovery scope = last known area
       } catch {
         /* ignore */
       }
@@ -33,6 +34,8 @@ export function useGeolocation() {
       (pos) => {
         const center: [number, number] = [pos.coords.longitude, pos.coords.latitude];
         setViewport({ center, zoom: 14 });
+        setScopedArea(center, null); // scope discovery to where you are
+        setUserLocation(center);
         setLocationMode('granted');
         localStorage.setItem(LAST_VIEWPORT, JSON.stringify(center));
       },

@@ -16,19 +16,29 @@ invite_links_bp = Blueprint('invite_links', __name__, url_prefix='/api/v1/invite
 @invite_links_bp.route('', methods=['POST'])
 @require_auth
 def generate_invite_link():
-    """J13: create a share link — generic (profile) or plan-specific."""
+    """J13 + spec §10 (MD-7): create a share link — generic (profile),
+    plan-specific, or place-specific. One mint path for every share surface."""
     body = request.get_json(silent=True) or {}
     plan_id = body.get('plan_id')
+    place_id = body.get('place_id')
+    if plan_id and place_id:
+        return err('INVALID_REQUEST', 400, 'A link targets a plan or a place, not both.')
     sb = get_supabase()
     if plan_id:
         plan = sb.table('plans').select('*').eq('id', plan_id).maybe_single().execute()
         if not plan or not plan.data:
             return err('NOT_FOUND', 404, 'Plan not found.')
+    if place_id:
+        place = sb.table('places').select('id').eq('id', place_id).maybe_single().execute()
+        if not place or not place.data:
+            return err('NOT_FOUND', 404, 'Place not found.')
     token = secrets.token_urlsafe(12)
     result = sb.table('invite_links').insert({
-        'token': token, 'created_by': g.user_id, 'plan_id': plan_id,
+        'token': token, 'created_by': g.user_id, 'plan_id': plan_id, 'place_id': place_id,
     }).execute()
-    track('invite_link_shared', g.user_id, {'plan_id': plan_id})
+    track('invite_link_shared', g.user_id, {'plan_id': plan_id, 'place_id': place_id})
+    if place_id:
+        track('place_shared', g.user_id, {'place_id': place_id})
     return ok(result.data[0], 201)
 
 
@@ -60,10 +70,27 @@ def get_invite_link(token: str):
                 rel = relationship(g.user_id, plan['organizer_id'])
                 plan_visible = rel['is_mutual'] or rel['is_self'] or False
 
+    # Place share links (spec §10): the place itself is world-viewable.
+    if link.get('place_id'):
+        place_row = sb.table('places').select('*').eq('id', link['place_id']).maybe_single().execute()
+        place = place_row.data if place_row else None
+        if place:
+            place_teaser = {'name': place['name'], 'category': place.get('category'), 'place_id': place['id']}
+
+    # List share links (Flow 19): resolve a teaser so the client can land on the
+    # list page (public lists are world-readable).
+    list_teaser = None
+    if link.get('list_id'):
+        list_row = sb.table('lists').select('*').eq('id', link['list_id']).maybe_single().execute()
+        lst = list_row.data if list_row else None
+        if lst and lst.get('visibility') == 'public':
+            list_teaser = {'list_id': lst['id'], 'name': lst['name']}
+
     return ok({
         'token': token,
         'creator': public_user(creator),
         'place': place_teaser,
+        'list': list_teaser,
         'plan_id': link.get('plan_id') if (plan_visible or not link.get('plan_id')) else None,
         'expired': expired,
     })
@@ -107,4 +134,6 @@ def redeem_invite_link(token: str):
         'followed': followed,
         'creator': public_user(creator),
         'plan_id': link.get('plan_id'),
+        'place_id': link.get('place_id'),
+        'list_id': link.get('list_id'),
     })

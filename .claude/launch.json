@@ -7,6 +7,26 @@
       "runtimeArgs": ["run", "dev"],
       "port": 5173,
       "cwd": "frontend"
+    },
+    {
+      "name": "backend-mvp",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "DEV_DB_PATH=/private/tmp/claude-501/-Users-luisbosquez-Library-Mobile-Documents-com-apple-CloudDocs-src-hyperlocal-v2/bddfbd09-9ccf-4683-bd93-a2ac9c7f8816/scratchpad/mvp-dev.db venv/bin/flask --app app run --port 5002"
+      ],
+      "port": 5002,
+      "cwd": "backend"
+    },
+    {
+      "name": "frontend-mvp",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "API_PROXY_TARGET=http://localhost:5002 npx vite --port 5175 --strictPort"
+      ],
+      "port": 5175,
+      "cwd": "frontend"
     }
   ]
 }
